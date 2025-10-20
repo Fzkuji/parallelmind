@@ -40,8 +40,7 @@ def train_epoch(epoch, wandb):
         train_loader.sampler.set_epoch(epoch)
     for step, batch in enumerate(train_loader):
         batch = {k: v.to(args.device) for k, v in batch.items()}
-        column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"])
-        column_mask = column_mask.to(args.device, dtype=model.lm_head.weight.dtype)
+        column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
