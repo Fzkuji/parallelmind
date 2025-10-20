@@ -103,7 +103,7 @@ def train_epoch(epoch, wandb):
 
 
 def init_model(lm_config):
-    tokenizer = AutoTokenizer.from_pretrained('../model')
+    tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
     model = MiniMindForCausalLM(lm_config)
     moe_path = '_moe' if lm_config.use_moe else ''
     ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}.pth'
@@ -129,7 +129,7 @@ def init_distributed_mode():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind Full SFT")
-    parser.add_argument("--out_dir", type=str, default="../out")
+    parser.add_argument("--out_dir", type=str, default=os.path.join(root_path, "out"))
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--learning_rate", type=float, default=5e-7)
@@ -150,12 +150,17 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=4)
     parser.add_argument('--use_moe', default=False, type=bool)
-    parser.add_argument("--data_path", type=str, default="../dataset/sft_mini_512.jsonl")
+    default_data_path = os.path.join(root_path, "minimind_dataset", "sft_512.jsonl")
+    parser.add_argument("--data_path", type=str, default=default_data_path)
 
     args = parser.parse_args()
 
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers,
                                use_moe=args.use_moe)
+    if not os.path.isabs(args.data_path):
+        args.data_path = os.path.join(root_path, args.data_path)
+    if not os.path.isabs(args.out_dir):
+        args.out_dir = os.path.join(root_path, args.out_dir)
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)

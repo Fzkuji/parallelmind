@@ -105,7 +105,7 @@ def train_epoch(epoch, wandb):
 
 
 def init_model(lm_config):
-    tokenizer = AutoTokenizer.from_pretrained('../model/')
+    tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
     model = MiniMindForCausalLM(lm_config).to(args.device)
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     return model, tokenizer
@@ -126,7 +126,7 @@ def init_distributed_mode():
 # torchrun --nproc_per_node 2 1-pretrain.py
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind Pretraining")
-    parser.add_argument("--out_dir", type=str, default="../out")
+    parser.add_argument("--out_dir", type=str, default=os.path.join(root_path, "out"))
     # 若要以最快速度实现zero则epochs设置为1轮；否则应当利用有限的数据训练2~6个epochs。
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -148,11 +148,16 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=8)
     parser.add_argument('--use_moe', default=False, type=bool)
-    parser.add_argument("--data_path", type=str, default="../dataset/pretrain_hq.jsonl")
+    default_data_path = os.path.join(root_path, "minimind_dataset", "pretrain_hq.jsonl")
+    parser.add_argument("--data_path", type=str, default=default_data_path)
     parser.add_argument("--max_total_tokens", type=int, default=4096)
     args = parser.parse_args()
 
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=args.use_moe)
+    if not os.path.isabs(args.data_path):
+        args.data_path = os.path.join(root_path, args.data_path)
+    if not os.path.isabs(args.out_dir):
+        args.out_dir = os.path.join(root_path, args.out_dir)
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
