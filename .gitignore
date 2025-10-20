@@ -4,3 +4,4 @@
 .DS_Store
 trainer/__pycache__/
 parallel/__pycache__/
+parallel_data/__pycache__/

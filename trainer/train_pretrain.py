@@ -17,8 +17,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 from contextlib import nullcontext
 from transformers import AutoTokenizer
 from parallel.columnar import build_columnar_causal_mask
-from dataset.parallel_dataset import ParallelPretrainDataset
-from dataset.parallel_collator import ParallelPretrainCollator
+from parallel_data.parallel_dataset import ParallelPretrainDataset
+from parallel_data.parallel_collator import ParallelPretrainCollator
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 
 warnings.filterwarnings('ignore')

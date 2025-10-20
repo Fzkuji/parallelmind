@@ -19,8 +19,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from parallel.columnar import build_columnar_causal_mask
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from dataset.parallel_dataset import ParallelSFTDataset
-from dataset.parallel_collator import ParallelSFTCollator
+from parallel_data.parallel_dataset import ParallelSFTDataset
+from parallel_data.parallel_collator import ParallelSFTCollator
 
 warnings.filterwarnings('ignore')
 
