@@ -239,12 +239,15 @@ class Attention(nn.Module):
             scores = scores + torch.triu(
                 torch.full((seq_len, seq_len), float("-inf"), device=scores.device),
                 diagonal=1
-            ).unsqueeze(0).unsqueeze(0)  # scores+mask
+            ).unsqueeze(0).unsqueeze(0)
 
             if attention_mask is not None:
-                extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-                extended_attention_mask = (1.0 - extended_attention_mask) * -1e9
-                scores = scores + extended_attention_mask
+                if attention_mask.dim() == scores.dim():
+                    scores = scores + attention_mask
+                else:
+                    extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+                    extended_attention_mask = (1.0 - extended_attention_mask) * -1e9
+                    scores = scores + extended_attention_mask
 
             scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             scores = self.attn_dropout(scores)
