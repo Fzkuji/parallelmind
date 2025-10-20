@@ -89,6 +89,11 @@ from torch import nn
 from transformers.activations import ACT2FN
 from typing import Optional, Tuple, List, Union
 from transformers import PreTrainedModel, GenerationMixin, PretrainedConfig
+
+from parallel.columnar import (
+    patch_model_with_interleaved_2d_rope,
+    set_rope_pos2d,
+)
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
@@ -132,8 +137,16 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     def rotate_half(x):
         return torch.cat((-x[..., x.shape[-1] // 2:], x[..., : x.shape[-1] // 2]), dim=-1)
 
-    q_embed = (q * cos.unsqueeze(unsqueeze_dim)) + (rotate_half(q) * sin.unsqueeze(unsqueeze_dim))
-    k_embed = (k * cos.unsqueeze(unsqueeze_dim)) + (rotate_half(k) * sin.unsqueeze(unsqueeze_dim))
+    if cos.dim() == q.dim() - 1:
+        cos = cos.unsqueeze(-2)
+        sin = sin.unsqueeze(-2)
+    elif cos.dim() < q.dim():
+        while cos.dim() < q.dim():
+            cos = cos.unsqueeze(-2)
+            sin = sin.unsqueeze(-2)
+
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -145,6 +158,15 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     return (
         x[:, :, :, None, :].expand(bs, slen, num_key_value_heads, n_rep, head_dim).reshape(bs, slen, num_key_value_heads * n_rep, head_dim)
     )
+
+
+class SimpleRotaryEmbedding(torch.nn.Module):
+    def __init__(self, dim: int, rope_theta: float) -> None:
+        super().__init__()
+        inv_freq = 1.0 / (rope_theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.attention_scaling = 1.0
+        self.original_inv_freq = inv_freq.clone()
 
 
 class Attention(nn.Module):
@@ -179,7 +201,9 @@ class Attention(nn.Module):
         xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
 
         cos, sin = position_embeddings
-        xq, xk = apply_rotary_pos_emb(xq, xk, cos[:seq_len], sin[:seq_len])
+        cos = cos[:, :seq_len, :].to(xq.dtype).view(bsz, seq_len, self.n_local_heads, self.head_dim)
+        sin = sin[:, :seq_len, :].to(xq.dtype).view(bsz, seq_len, self.n_local_heads, self.head_dim)
+        xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
 
         # kv_cache实现
         if past_key_value is not None:
@@ -390,29 +414,41 @@ class MiniMindModel(nn.Module):
         self.layers = nn.ModuleList([MiniMindBlock(l, config) for l in range(self.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        freqs_cos, freqs_sin = precompute_freqs_cis(dim=config.hidden_size // config.num_attention_heads,
-                                                    end=config.max_position_embeddings, rope_base=config.rope_theta,
-                                                    rope_scaling=config.rope_scaling)
-        self.register_buffer("freqs_cos", freqs_cos, persistent=False)
-        self.register_buffer("freqs_sin", freqs_sin, persistent=False)
+        rope_dim = config.hidden_size // config.num_attention_heads
+        self.rotary_emb = SimpleRotaryEmbedding(rope_dim, config.rope_theta)
+        pair_indices = self._auto_pair_indices(0.25)
+        patch_model_with_interleaved_2d_rope(self, pair_indices)
 
-    def forward(self,
-                input_ids: Optional[torch.Tensor] = None,
-                attention_mask: Optional[torch.Tensor] = None,
-                past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
-                use_cache: bool = False,
-                **kwargs):
+    def _auto_pair_indices(self, ratio: float) -> Tuple[int, ...]:
+        freq_count = int(self.rotary_emb.inv_freq.numel())
+        pair_count = max(1, min(freq_count, int(round(freq_count * ratio))))
+        start = max(1, freq_count - pair_count + 1)
+        return tuple(range(start, freq_count + 1))
+
+    def forward(
+        self,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        use_cache: bool = False,
+        position_ids: Optional[torch.Tensor] = None,
+        pos2d: Optional[torch.Tensor] = None,
+        **kwargs,
+    ):
         batch_size, seq_length = input_ids.shape
-        if hasattr(past_key_values, 'layers'): past_key_values = None
+        if hasattr(past_key_values, "layers"):
+            past_key_values = None
         past_key_values = past_key_values or [None] * len(self.layers)
-        start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
 
         hidden_states = self.dropout(self.embed_tokens(input_ids))
 
-        position_embeddings = (
-            self.freqs_cos[start_pos:start_pos + seq_length],
-            self.freqs_sin[start_pos:start_pos + seq_length]
-        )
+        if position_ids is None:
+            position_ids = torch.arange(seq_length, device=input_ids.device)[None, :].expand(batch_size, -1)
+        if pos2d is None:
+            raise ValueError("pos2d tensor is required for columnar decoding.")
+        set_rope_pos2d(self, pos2d)
+        cos, sin = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = (cos, sin)
 
         presents = []
         for layer_idx, (layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
@@ -421,7 +457,7 @@ class MiniMindModel(nn.Module):
                 position_embeddings,
                 past_key_value=past_key_value,
                 use_cache=use_cache,
-                attention_mask=attention_mask
+                attention_mask=attention_mask,
             )
             presents.append(present)
 

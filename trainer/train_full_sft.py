@@ -15,8 +15,10 @@ from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from parallel.columnar import build_columnar_causal_mask
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from dataset.lm_dataset import SFTDataset
+from dataset.parallel_dataset import ParallelSFTDataset
+from dataset.parallel_collator import ParallelSFTCollator
 
 warnings.filterwarnings('ignore')
 
@@ -31,25 +33,30 @@ def get_lr(current_step, total_steps, lr):
 
 
 def train_epoch(epoch, wandb):
-    loss_fct = nn.CrossEntropyLoss(reduction='none')
+    loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
-    for step, (X, Y, loss_mask) in enumerate(train_loader):
-        X = X.to(args.device)
-        Y = Y.to(args.device)
-        loss_mask = loss_mask.to(args.device)
+    if ddp and isinstance(train_loader.sampler, DistributedSampler):
+        train_loader.sampler.set_epoch(epoch)
+    for step, batch in enumerate(train_loader):
+        batch = {k: v.to(args.device) for k, v in batch.items()}
+        column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"])
+        column_mask = column_mask.to(args.device, dtype=model.lm_head.weight.dtype)
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
         with ctx:
-            res = model(X)
-            loss = loss_fct(
-                res.logits.view(-1, res.logits.size(-1)),
-                Y.view(-1)
-            ).view(Y.size())
-
-            loss = (loss * loss_mask).sum() / loss_mask.sum()
-            loss += res.aux_loss
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=column_mask,
+                position_ids=batch["position_ids"],
+                pos2d=batch["pos2d"],
+            )
+            logits = outputs.logits[:, :-1, :].contiguous()
+            labels = batch["labels"][:, 1:].contiguous()
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+            if hasattr(outputs, "aux_loss"):
+                loss = loss + outputs.aux_loss
             loss = loss / args.accumulation_steps
 
         scaler.scale(loss).backward()
@@ -76,7 +83,7 @@ def train_epoch(epoch, wandb):
                     spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60))
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
-                wandb.log({"loss": loss * args.accumulation_steps,
+                wandb.log({"loss": loss.item() * args.accumulation_steps,
                            "lr": optimizer.param_groups[-1]['lr'],
                            "epoch_Time": spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60})
 
@@ -139,6 +146,7 @@ if __name__ == "__main__":
     parser.add_argument('--hidden_size', default=512, type=int)
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
+    parser.add_argument('--branches_per_sample', type=int, default=4)
     parser.add_argument('--use_moe', default=False, type=bool)
     parser.add_argument("--data_path", type=str, default="../dataset/sft_mini_512.jsonl")
 
@@ -149,7 +157,7 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
-    tokens_per_iter = args.batch_size * args.max_seq_len
+    tokens_per_iter = args.batch_size * args.max_seq_len * args.branches_per_sample
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Full-SFT-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
@@ -178,16 +186,23 @@ if __name__ == "__main__":
 
     model, tokenizer = init_model(lm_config)
 
-    train_ds = SFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
-    train_sampler = DistributedSampler(train_ds) if ddp else None
+    train_ds = ParallelSFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
+    collator = ParallelSFTCollator(
+        tokenizer,
+        branches_per_sample=args.branches_per_sample,
+        pad_to=args.max_seq_len,
+    )
+    train_sampler = DistributedSampler(train_ds, drop_last=True) if ddp else None
+    effective_batch_size = args.batch_size * args.branches_per_sample
     train_loader = DataLoader(
         train_ds,
-        batch_size=args.batch_size,
+        batch_size=effective_batch_size,
         pin_memory=True,
-        drop_last=False,
+        drop_last=True,
         shuffle=False,
         num_workers=args.num_workers,
-        sampler=train_sampler
+        sampler=train_sampler,
+        collate_fn=collator,
     )
 
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ['float16', 'bfloat16']))
