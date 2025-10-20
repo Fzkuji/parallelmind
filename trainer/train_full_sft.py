@@ -150,7 +150,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=4)
     parser.add_argument('--use_moe', default=False, type=bool)
-    default_data_path = os.path.join(root_path, "minimind_dataset", "sft_512.jsonl")
+    default_data_path = os.path.join(root_path, "dataset", "sft_512.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
 
     args = parser.parse_args()
