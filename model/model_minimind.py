@@ -210,8 +210,8 @@ class Attention(nn.Module):
         xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
 
         cos, sin = position_embeddings
-        cos = cos[:, :seq_len, :].to(xq.dtype).view(bsz, seq_len, self.n_local_heads, self.head_dim)
-        sin = sin[:, :seq_len, :].to(xq.dtype).view(bsz, seq_len, self.n_local_heads, self.head_dim)
+        cos = cos[:, :seq_len, :].to(xq.dtype)
+        sin = sin[:, :seq_len, :].to(xq.dtype)
         xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
 
         # kv_cache实现
