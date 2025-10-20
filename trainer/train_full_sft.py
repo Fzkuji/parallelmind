@@ -103,7 +103,19 @@ def train_epoch(epoch, wandb):
 
 def init_model(lm_config):
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+    vocab_size = len(tokenizer)
+    lm_config.vocab_size = vocab_size
+    max_positions = args.max_seq_len * args.branches_per_sample
+    lm_config.max_position_embeddings = max(lm_config.max_position_embeddings, max_positions)
+    lm_config.pad_token_id = tokenizer.pad_token_id
+    lm_config.eos_token_id = tokenizer.eos_token_id or tokenizer.pad_token_id
+
     model = MiniMindForCausalLM(lm_config)
+    model.resize_token_embeddings(vocab_size)
     moe_path = '_moe' if lm_config.use_moe else ''
     ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}.pth'
     state_dict = torch.load(ckp, map_location=args.device)

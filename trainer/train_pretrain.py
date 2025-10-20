@@ -105,7 +105,20 @@ def train_epoch(epoch, wandb):
 
 def init_model(lm_config):
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
-    model = MiniMindForCausalLM(lm_config).to(args.device)
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+    vocab_size = len(tokenizer)
+    lm_config.vocab_size = vocab_size
+    max_positions = args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len * args.branches_per_sample
+    lm_config.max_position_embeddings = max(lm_config.max_position_embeddings, max_positions)
+    lm_config.pad_token_id = tokenizer.pad_token_id
+    lm_config.eos_token_id = tokenizer.eos_token_id or tokenizer.pad_token_id
+
+    model = MiniMindForCausalLM(lm_config)
+    model.resize_token_embeddings(vocab_size)
+    model = model.to(args.device)
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     return model, tokenizer
 
