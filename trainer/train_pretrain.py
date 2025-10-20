@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, default=os.path.join(root_path, "out"))
     # 若要以最快速度实现zero则epochs设置为1轮；否则应当利用有限的数据训练2~6个epochs。
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--learning_rate", type=float, default=5e-4)
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16")
@@ -178,7 +178,11 @@ if __name__ == "__main__":
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
 
-    ctx = nullcontext()
+    if device_type == "cpu":
+        ctx = nullcontext()
+    else:
+        amp_dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+        ctx = torch.cuda.amp.autocast(dtype=amp_dtype)
 
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
     ddp_local_rank, DEVICE = 0, "cuda:0"
@@ -222,7 +226,7 @@ if __name__ == "__main__":
         collate_fn=collator,
     )
 
-    scaler = torch.cuda.amp.GradScaler(enabled=False)
+    scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ["float16", "bfloat16"]))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     if ddp:
