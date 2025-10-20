@@ -129,7 +129,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, default=os.path.join(root_path, "out"))
     # 若要以最快速度实现zero则epochs设置为1轮；否则应当利用有限的数据训练2~6个epochs。
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--learning_rate", type=float, default=5e-4)
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16")
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
-    tokens_per_iter = args.batch_size * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
+    tokens_per_iter = args.batch_size * args.branches_per_sample * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"

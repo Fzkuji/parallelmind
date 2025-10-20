@@ -168,6 +168,15 @@ class SimpleRotaryEmbedding(torch.nn.Module):
         self.attention_scaling = 1.0
         self.original_inv_freq = inv_freq.clone()
 
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        inv = self.inv_freq.to(position_ids.device)
+        pos = position_ids.to(dtype=torch.float32)
+        freqs = pos[..., None] * inv[None, None, :]
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos() * self.attention_scaling
+        sin = emb.sin() * self.attention_scaling
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
 
 class Attention(nn.Module):
     def __init__(self, args: MiniMindConfig):
