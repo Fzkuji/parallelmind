@@ -103,6 +103,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
     3. 批量forward, 一次处理所有活跃分支
     """
     device = next(model.parameters()).device
+    debug = getattr(args, 'debug', False)
     branches = []
     for tokens in branch_inputs:
         branches.append({"input_ids": list(tokens), "answer_offset": len(tokens)})
@@ -114,6 +115,18 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         device=device,
         pad_to=None,
     )
+
+    if debug:
+        print(f"\n=== Layout Info ===")
+        print(f"input_ids shape: {layout.input_ids.shape}")
+        print(f"pos2d shape: {layout.pos2d.shape}")
+        print(f"time_ids shape: {layout.time_ids.shape}")
+        print(f"Metadata: branches={len(layout.metadata[0].branch_ids)}, "
+              f"branch_positions={layout.metadata[0].branch_positions}, "
+              f"branch_start_y={layout.metadata[0].branch_start_y}")
+        seq_len = layout.attention_mask.sum().item()
+        print(f"Actual sequence length: {seq_len}")
+        print(f"Time range: {layout.time_ids[0, :seq_len].min().item()} ~ {layout.time_ids[0, :seq_len].max().item()}")
 
     set_rope_pos2d(model, layout.pos2d)
 
@@ -143,13 +156,24 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branch_count = len(branch_inputs)
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
 
-        # 找出所有分支中最大的起始time (右对齐后的列时间)
-        current_column_time = max(branch_start_y) if branch_start_y else 0
-
         # 记录当前序列
-        seq_len = attn_mask.sum().item()
+        seq_len = int(attn_mask.sum().item())
         time_list = time_ids[0, :seq_len].tolist()
         past = outputs.past_key_values
+
+        # 找出所有分支中最大的time (当前已生成的最大列时间)
+        # 过滤掉padding（time_ids == -1）
+        valid_times = [t for t in time_list if t >= 0]
+        if valid_times:
+            current_column_time = max(valid_times) + 1
+        else:
+            current_column_time = 0
+
+        if debug:
+            print(f"\n=== Generation Start ===")
+            print(f"Starting column time: {current_column_time}")
+            print(f"Branch count: {branch_count}")
+            print(f"branch_pos1d_end: {metadata.branch_pos1d_end}")
 
         stop_flags = [False] * branch_count
         eos_id = tokenizer.eos_token_id
@@ -173,8 +197,12 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                     pos1d_idx = metadata.branch_pos1d_end[branch_idx]
                     if pos1d_idx >= 0 and pos1d_idx < outputs.logits.size(1):
                         branch_logits.append(outputs.logits[0, pos1d_idx])
+                        if debug:
+                            print(f"Branch {branch_idx}: pos1d_idx={pos1d_idx}, logits_shape={outputs.logits.shape}")
                     else:
                         branch_logits.append(None)
+                        if debug:
+                            print(f"Branch {branch_idx}: INVALID pos1d_idx={pos1d_idx}")
 
             for branch_idx in range(branch_count):
                 if stop_flags[branch_idx]:
@@ -210,6 +238,10 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 branch_generated[branch_idx].append(token_id)
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
+
+                if debug and step_idx == 0:
+                    decoded = tokenizer.decode([token_id])
+                    print(f"Branch {branch_idx} first token: {token_id} -> '{decoded}'")
 
                 # 计算2D位置 (所有分支使用同一列时间!)
                 new_pos2d.append([branch_positions[branch_idx], current_column_time])
@@ -298,6 +330,7 @@ def main():
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--max_prompt_length", type=int, default=2048)
     parser.add_argument("--chat_template", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="启用调试输出")
     args = parser.parse_args()
 
     model, tokenizer = load_model(args)
