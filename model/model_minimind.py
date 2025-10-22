@@ -236,10 +236,16 @@ class Attention(nn.Module):
             output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
         else:
             scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            scores = scores + torch.triu(
-                torch.full((seq_len, seq_len), float("-inf"), device=scores.device),
-                diagonal=1
-            ).unsqueeze(0).unsqueeze(0)
+
+            # 只在没有KV cache时添加自动causal mask
+            # 当使用KV cache时, seq_len可能与kv_len不同, 需要自定义mask
+            kv_len = xk.size(2)  # xk shape: [batch, heads, kv_len, head_dim]
+            if past_key_value is None and seq_len == kv_len:
+                # 没有KV cache, 添加标准causal mask
+                scores = scores + torch.triu(
+                    torch.full((seq_len, seq_len), float("-inf"), device=scores.device),
+                    diagonal=1
+                ).unsqueeze(0).unsqueeze(0)
 
             if attention_mask is not None:
                 if attention_mask.dim() == scores.dim():

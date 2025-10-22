@@ -212,11 +212,16 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             num_new = len(new_tokens)
             total_len = len(time_list)
 
-            # 构造一个 [1, 1, num_new, total_len] 的mask
+            # 关键修复: 模型的attention会自动添加(seq_len, seq_len)的causal mask
+            # 但使用KV cache时, scores的形状是(seq_len, kv_len), 不是(seq_len, seq_len)
+            # 我们需要构造一个能覆盖自动causal mask的4D attention_mask
+            # 形状: [batch, 1, num_new, total_len]
+            # 注意: 我们传入的mask会与scores相加, 所以-inf表示不可见, 0表示可见
             incremental_mask = torch.full(
                 (1, 1, num_new, total_len),
                 fill_value=torch.finfo(torch.float32).min,
-                device=device
+                device=device,
+                dtype=torch.float32
             )
 
             for i, new_time in enumerate(new_times):
@@ -229,7 +234,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             set_rope_pos2d(model, batch_pos2d)
             outputs = model(
                 input_ids=batch_input_ids,
-                attention_mask=incremental_mask,
+                attention_mask=incremental_mask,  # 4D mask会直接与scores相加
                 position_ids=batch_pos1d,
                 past_key_values=past,
                 pos2d=batch_pos2d,
