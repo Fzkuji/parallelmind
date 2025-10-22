@@ -140,6 +140,38 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
     param_dtype = next(model.parameters()).dtype
 
     with torch.no_grad():
+        # 打印输入tensor的布局
+        if debug:
+            print(f"\n=== Input Tokens Tensor ===")
+            print(f"input_ids shape: {input_ids.shape}")
+            print(f"input_ids tensor:\n{input_ids}")
+
+            # 打印每个token对应的文本
+            seq_len = int(attn_mask.sum().item())
+            tokens_list = input_ids[0, :seq_len].tolist()
+            print(f"\nToken IDs (valid {seq_len} tokens): {tokens_list}")
+
+            # 逐个解码显示
+            print(f"\nToken details:")
+            for idx in range(input_ids.size(1)):
+                token_id = input_ids[0, idx].item()
+                is_valid = attn_mask[0, idx].item() > 0.5
+                time_val = time_ids[0, idx].item() if idx < time_ids.size(1) else -1
+                pos2d_val = layout.pos2d[0, idx].tolist() if idx < layout.pos2d.size(1) else [-1, -1]
+
+                if is_valid:
+                    token_text = tokenizer.decode([token_id])
+                    print(f"  [{idx:3d}] id={token_id:5d} time={time_val:3d} pos2d={pos2d_val} | '{token_text}'")
+                else:
+                    print(f"  [{idx:3d}] <PAD> (id={token_id})")
+
+            # 显示attention mask
+            print(f"\nAttention mask (1=valid, 0=padding):")
+            mask_str = "".join(["1" if attn_mask[0, i].item() > 0.5 else "0" for i in range(min(80, attn_mask.size(1)))])
+            if attn_mask.size(1) > 80:
+                mask_str += "..."
+            print(f"  {mask_str}")
+
         # 初始prefill
         column_mask = build_columnar_causal_mask(time_ids, attn_mask).to(device, dtype=param_dtype)
         outputs = model(
