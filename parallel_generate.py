@@ -95,12 +95,12 @@ def sample_token(logits: torch.Tensor, args) -> torch.Tensor:
 
 def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, tokenizer) -> List[str]:
     """
-    列式并行生成 - 每轮为所有分支同时生成一个token
+    列式并行生成 - 所有分支在同一列时间同步生成
 
     关键点:
-    1. 所有分支在同一列时间生成token
-    2. 同列的token可以看到之前所有列,但看不到同列其他分支
-    3. 使用批量forward,一次处理所有活跃分支
+    1. 所有分支在同一列时间生成token (真正的并行)
+    2. 同列的token互不可见 (通过mask控制)
+    3. 批量forward, 一次处理所有活跃分支
     """
     device = next(model.parameters()).device
     branches = []
@@ -122,9 +122,12 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
     pos1d = layout.pos1d
     time_ids = layout.time_ids
 
+    # 获取模型参数dtype用于mask
+    param_dtype = next(model.parameters()).dtype
+
     with torch.no_grad():
         # 初始prefill
-        column_mask = build_columnar_causal_mask(time_ids, attn_mask).to(device)
+        column_mask = build_columnar_causal_mask(time_ids, attn_mask).to(device, dtype=param_dtype)
         outputs = model(
             input_ids=input_ids,
             attention_mask=column_mask,
@@ -134,45 +137,71 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         )
 
         metadata = layout.metadata[0]
-        branch_positions = metadata.branch_positions
-        branch_start_y = metadata.branch_start_y
-        branch_lengths = metadata.branch_lengths[:]
-        branch_pos1d_end = metadata.branch_pos1d_end[:]
+        branch_positions = metadata.branch_positions  # [branch_id * 32, ...]
+        branch_start_y = metadata.branch_start_y  # 每个分支的起始time
 
         branch_count = len(branch_inputs)
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
 
-        # 获取每个分支最后一个位置的logits
-        branch_logits = [outputs.logits[0, idx].detach() for idx in branch_pos1d_end]
+        # 找出所有分支中最大的起始time (右对齐后的列时间)
+        current_column_time = max(branch_start_y) if branch_start_y else 0
 
-        time_list = time_ids[0, : attn_mask.sum().item()].tolist()
+        # 记录当前序列
+        seq_len = attn_mask.sum().item()
+        time_list = time_ids[0, :seq_len].tolist()
         past = outputs.past_key_values
 
         stop_flags = [False] * branch_count
+        eos_id = tokenizer.eos_token_id
 
-        # 增量生成循环
+        # 增量生成循环 - 列同步
         for step_idx in range(args.max_new_tokens):
             if all(stop_flags):
                 break
 
-            # 1. 为所有活跃分支采样新token
+            # 1. 为当前列的所有活跃分支采样新token
             new_tokens = []
-            new_times = []
             new_pos2d = []
             new_pos1d = []
             active_branch_indices = []
+
+            # 使用上一轮的logits采样 (第一轮从prefill的输出获取)
+            if step_idx == 0:
+                # 第一轮: 从prefill的logits采样
+                branch_logits = []
+                for branch_idx in range(branch_count):
+                    pos1d_idx = metadata.branch_pos1d_end[branch_idx]
+                    if pos1d_idx >= 0 and pos1d_idx < outputs.logits.size(1):
+                        branch_logits.append(outputs.logits[0, pos1d_idx])
+                    else:
+                        branch_logits.append(None)
 
             for branch_idx in range(branch_count):
                 if stop_flags[branch_idx]:
                     continue
 
+                # 获取logits
+                if step_idx == 0:
+                    logits = branch_logits[branch_idx]
+                    if logits is None:
+                        stop_flags[branch_idx] = True
+                        continue
+                else:
+                    # 从上一轮的outputs中获取对应分支的logits
+                    # outputs.logits的顺序与active_branch_indices一致
+                    try:
+                        logits_idx = active_branch_indices_prev.index(branch_idx)
+                        logits = outputs.logits[0, logits_idx]
+                    except (ValueError, IndexError):
+                        stop_flags[branch_idx] = True
+                        continue
+
                 # 采样
-                logits_branch = branch_logits[branch_idx]
-                next_token = sample_token(logits_branch, args).to(device)
+                next_token = sample_token(logits, args).to(device)
                 token_id = next_token.item()
 
                 # 检查是否结束
-                if token_id == tokenizer.eos_token_id:
+                if eos_id is not None and token_id == eos_id:
                     stop_flags[branch_idx] = True
                     branch_generated[branch_idx].append(token_id)
                     continue
@@ -182,78 +211,69 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
 
-                # 计算该分支新token的时间坐标
-                new_time = branch_start_y[branch_idx] + branch_lengths[branch_idx]
-                branch_lengths[branch_idx] += 1
-                new_times.append(new_time)
+                # 计算2D位置 (所有分支使用同一列时间!)
+                new_pos2d.append([branch_positions[branch_idx], current_column_time])
 
-                # 计算2D位置
-                new_pos2d.append([branch_positions[branch_idx], new_time])
-
-                # 计算1D位置(线性序列中的位置)
-                position_index = len(time_list)
+                # 计算1D位置
+                position_index = len(time_list) + len(new_pos1d)
                 new_pos1d.append(position_index)
 
             # 如果没有活跃分支,退出
             if not new_tokens:
                 break
 
+            # 保存当前轮的active_branch_indices供下一轮使用
+            active_branch_indices_prev = active_branch_indices[:]
+
             # 2. 批量forward所有新token
-            # 构造输入张量
+            num_new = len(new_tokens)
             batch_input_ids = torch.tensor([new_tokens], dtype=torch.long, device=device)  # [1, num_active]
             batch_pos1d = torch.tensor([new_pos1d], dtype=torch.long, device=device)  # [1, num_active]
             batch_pos2d = torch.tensor([new_pos2d], dtype=torch.long, device=device)  # [1, num_active, 2]
 
-            # 更新time_list
-            time_list.extend(new_times)
-
-            # 构造增量mask
-            # 每个新token可以看到所有历史token (time < 当前token的time)
-            num_new = len(new_tokens)
+            # 更新time_list (所有新token使用同一列时间)
+            time_list.extend([current_column_time] * num_new)
             total_len = len(time_list)
 
-            # 关键修复: 模型的attention会自动添加(seq_len, seq_len)的causal mask
-            # 但使用KV cache时, scores的形状是(seq_len, kv_len), 不是(seq_len, seq_len)
-            # 我们需要构造一个能覆盖自动causal mask的4D attention_mask
-            # 形状: [batch, 1, num_new, total_len]
-            # 注意: 我们传入的mask会与scores相加, 所以-inf表示不可见, 0表示可见
+            # 3. 构造列同步mask
+            # 关键: 同列的token互不可见, 只能看到time < current_column_time的token
             incremental_mask = torch.full(
                 (1, 1, num_new, total_len),
                 fill_value=torch.finfo(torch.float32).min,
                 device=device,
-                dtype=torch.float32
+                dtype=param_dtype
             )
 
-            for i, new_time in enumerate(new_times):
+            for i in range(num_new):
                 for j, hist_time in enumerate(time_list):
-                    if hist_time < new_time or j == total_len - num_new + i:
-                        # 可以看到更早的时间,或者自己
+                    if hist_time < current_column_time:
+                        # 可以看到之前列的token
                         incremental_mask[0, 0, i, j] = 0.0
+                    elif j == total_len - num_new + i:
+                        # 可以看到自己
+                        incremental_mask[0, 0, i, j] = 0.0
+                    # else: 同列其他分支不可见 (保持-inf)
 
             # Forward
             set_rope_pos2d(model, batch_pos2d)
             outputs = model(
                 input_ids=batch_input_ids,
-                attention_mask=incremental_mask,  # 4D mask会直接与scores相加
+                attention_mask=incremental_mask,
                 position_ids=batch_pos1d,
                 past_key_values=past,
                 pos2d=batch_pos2d,
                 use_cache=True,
             )
 
-            # 更新past
+            # 更新状态
             past = outputs.past_key_values
-
-            # 更新每个分支的logits
-            for i, branch_idx in enumerate(active_branch_indices):
-                branch_logits[branch_idx] = outputs.logits[0, i].detach()
-                branch_pos1d_end[branch_idx] = new_pos1d[i]
+            current_column_time += 1  # 进入下一列
 
         # 解码结果
         results: List[str] = []
         for generated in branch_generated:
-            if tokenizer.eos_token_id in generated:
-                eos_index = generated.index(tokenizer.eos_token_id)
+            if eos_id is not None and eos_id in generated:
+                eos_index = generated.index(eos_id)
                 generated = generated[:eos_index]
             text = tokenizer.decode(generated, skip_special_tokens=True)
             results.append(text.strip())
