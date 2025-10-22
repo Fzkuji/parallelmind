@@ -266,7 +266,6 @@ def build_flat_linear_layout(
         sorted_ids = [entry[3] for entry in entries_eff]
         sorted_branch = [branch_positions[entry[1]] for entry in entries_eff]
         sorted_time = [entry[0] for entry in entries_eff]
-
         branch_lengths_eff = [0 for _ in branch_sequences]
         for pos_idx, (time_val, branch_id, _, _) in enumerate(entries_eff):
             branch_pos1d_end[branch_id] = pos_idx

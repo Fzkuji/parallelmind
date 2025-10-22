@@ -280,12 +280,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             for i in range(num_new):
                 for j, hist_time in enumerate(time_list):
                     if hist_time < current_column_time:
-                        # 可以看到之前列的token
                         incremental_mask[0, 0, i, j] = 0.0
                     elif j == total_len - num_new + i:
-                        # 可以看到自己
                         incremental_mask[0, 0, i, j] = 0.0
-                    # else: 同列其他分支不可见 (保持-inf)
 
             # Forward
             set_rope_pos2d(model, batch_pos2d)
