@@ -114,6 +114,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         samples,
         device=device,
         pad_to=None,
+        align_to="right",
     )
 
     if debug:

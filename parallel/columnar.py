@@ -1,7 +1,7 @@
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Literal
 
 import torch
 from transformers import AutoTokenizer
@@ -137,7 +137,10 @@ def build_flat_linear_layout(
     device: torch.device,
     pad_to: Optional[int] = None,
     branch_stride: int = DEFAULT_BRANCH_POSITION_STRIDE,
+    align_to: Literal["left", "right"] = "left",
 ) -> BatchLayout:
+    if align_to not in {"left", "right"}:
+        raise ValueError(f"Unsupported align_to value: {align_to}")
     tokenized: List[Dict[str, Any]] = []
     max_len = 0
     metadata: List[LayoutMetadata] = []
@@ -229,13 +232,18 @@ def build_flat_linear_layout(
             if idx == 0 and main_len > 0:
                 times = torch.arange(seq_len, device=device)
             else:
-                if non_main_count > 0:
-                    if main_len > 0:
-                        start_col = main_len
-                    else:
-                        start_col = 0
+                if align_to == "right" and non_main_count > 0:
+                    base_offset = main_len if main_len > 0 else 0
+                    shift = max(max_branch_len - seq_len, 0)
+                    start_col = base_offset + shift
                 else:
-                    start_col = 0 if main_len == 0 else main_len
+                    if non_main_count > 0:
+                        if main_len > 0:
+                            start_col = main_len
+                        else:
+                            start_col = 0
+                    else:
+                        start_col = 0 if main_len == 0 else main_len
                 times = torch.arange(seq_len, device=device) + start_col
             branch_start_y.append(int(times[0].item()))
 
