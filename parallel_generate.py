@@ -261,20 +261,23 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 next_token = sample_token(logits, args).to(device)
                 token_id = next_token.item()
 
+                if debug and step_idx == 0:
+                    decoded = tokenizer.decode([token_id])
+                    is_eos = (eos_id is not None and token_id == eos_id)
+                    print(f"Branch {branch_idx} first token: {token_id} -> '{decoded}' (EOS={is_eos}, eos_id={eos_id})")
+
                 # 检查是否结束
                 if eos_id is not None and token_id == eos_id:
                     stop_flags[branch_idx] = True
                     branch_generated[branch_idx].append(token_id)
+                    if debug:
+                        print(f"  -> Branch {branch_idx} hit EOS immediately at step {step_idx}")
                     continue
 
                 # 记录生成的token
                 branch_generated[branch_idx].append(token_id)
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
-
-                if debug and step_idx == 0:
-                    decoded = tokenizer.decode([token_id])
-                    print(f"Branch {branch_idx} first token: {token_id} -> '{decoded}'")
 
                 # 计算2D位置 (所有分支使用同一列时间!)
                 new_pos2d.append([branch_positions[branch_idx], current_column_time])
@@ -332,12 +335,21 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             current_column_time += 1  # 进入下一列
 
         # 解码结果
+        if debug:
+            print(f"\n=== Decoding Results ===")
+            for idx, generated in enumerate(branch_generated):
+                print(f"Branch {idx} generated {len(generated)} tokens: {generated[:10]}{'...' if len(generated) > 10 else ''}")
+
         results: List[str] = []
-        for generated in branch_generated:
+        for idx, generated in enumerate(branch_generated):
             if eos_id is not None and eos_id in generated:
                 eos_index = generated.index(eos_id)
-                generated = generated[:eos_index]
-            text = tokenizer.decode(generated, skip_special_tokens=True)
+                generated_slice = generated[:eos_index]
+                if debug:
+                    print(f"Branch {idx}: Found EOS at position {eos_index}, slicing to {len(generated_slice)} tokens")
+            else:
+                generated_slice = generated
+            text = tokenizer.decode(generated_slice, skip_special_tokens=True)
             results.append(text.strip())
         return results
 
