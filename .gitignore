@@ -5,3 +5,4 @@
 trainer/__pycache__/
 parallel/__pycache__/
 parallel_data/__pycache__/
+__pycache__/

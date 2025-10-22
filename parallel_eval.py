@@ -41,7 +41,12 @@ def init_chat_components(args):
         use_moe=args.use_moe,
         inference_rope_scaling=args.inference_rope_scaling,
     )
-    model_path = Path(args.out_dir) / f"full_sft_{args.hidden_size}{'_moe' if args.use_moe else ''}.pth"
+    if args.model_path:
+        model_path = Path(args.model_path)
+    else:
+        model_path = Path(args.out_dir) / f"full_sft_{args.hidden_size}{'_moe' if args.use_moe else ''}.pth"
+    if not model_path.exists():
+        raise FileNotFoundError(f'Checkpoint not found: {model_path}')
     state_dict = torch.load(model_path, map_location=args.device)
     model = MiniMindForCausalLM(config)
     model.load_state_dict(state_dict, strict=True)
@@ -64,6 +69,7 @@ def main():
     parser.add_argument("--prompts-file", type=str, default="", help="文本或 JSONL，按行提供问题")
     parser.add_argument("--prompts", nargs="*", help="直接在命令行提供的问题列表")
     parser.add_argument("--branches-per-sample", type=int, default=4)
+    parser.add_argument("--model_path", type=str, default="", help="Optional path to .pth checkpoint")
     parser.add_argument("--out_dir", default="out", type=str)
     parser.add_argument("--temperature", default=0.85, type=float)
     parser.add_argument("--top_p", default=0.85, type=float)

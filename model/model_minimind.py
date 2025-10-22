@@ -457,7 +457,8 @@ class MiniMindModel(nn.Module):
         if position_ids is None:
             position_ids = torch.arange(seq_length, device=input_ids.device)[None, :].expand(batch_size, -1)
         if pos2d is None:
-            raise ValueError("pos2d tensor is required for columnar decoding.")
+            branch_zeros = torch.zeros_like(position_ids)
+            pos2d = torch.stack([branch_zeros, position_ids], dim=-1)
         set_rope_pos2d(self, pos2d)
         cos, sin = self.rotary_emb(hidden_states, position_ids)
         position_embeddings = (cos, sin)
