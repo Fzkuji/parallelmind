@@ -94,6 +94,14 @@ def sample_token(logits: torch.Tensor, args) -> torch.Tensor:
 
 
 def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, tokenizer) -> List[str]:
+    """
+    列式并行生成 - 每轮为所有分支同时生成一个token
+
+    关键点:
+    1. 所有分支在同一列时间生成token
+    2. 同列的token可以看到之前所有列,但看不到同列其他分支
+    3. 使用批量forward,一次处理所有活跃分支
+    """
     device = next(model.parameters()).device
     branches = []
     for tokens in branch_inputs:
@@ -115,6 +123,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
     time_ids = layout.time_ids
 
     with torch.no_grad():
+        # 初始prefill
         column_mask = build_columnar_causal_mask(time_ids, attn_mask).to(device)
         outputs = model(
             input_ids=input_ids,
@@ -132,6 +141,8 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
         branch_count = len(branch_inputs)
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
+
+        # 获取每个分支最后一个位置的logits
         branch_logits = [outputs.logits[0, idx].detach() for idx in branch_pos1d_end]
 
         time_list = time_ids[0, : attn_mask.sum().item()].tolist()
@@ -139,52 +150,101 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
         stop_flags = [False] * branch_count
 
-        for _ in range(args.max_new_tokens):
+        # 增量生成循环
+        for step_idx in range(args.max_new_tokens):
             if all(stop_flags):
                 break
 
-            tokens_this_round: List[torch.Tensor] = []
+            # 1. 为所有活跃分支采样新token
+            new_tokens = []
+            new_times = []
+            new_pos2d = []
+            new_pos1d = []
+            active_branch_indices = []
+
             for branch_idx in range(branch_count):
                 if stop_flags[branch_idx]:
-                    tokens_this_round.append(torch.tensor([tokenizer.pad_token_id], device=device))
                     continue
+
+                # 采样
                 logits_branch = branch_logits[branch_idx]
                 next_token = sample_token(logits_branch, args).to(device)
                 token_id = next_token.item()
+
+                # 检查是否结束
                 if token_id == tokenizer.eos_token_id:
                     stop_flags[branch_idx] = True
-                branch_generated[branch_idx].append(token_id)
-                tokens_this_round.append(next_token)
-
-            for branch_idx, token_tensor in enumerate(tokens_this_round):
-                if stop_flags[branch_idx]:
+                    branch_generated[branch_idx].append(token_id)
                     continue
+
+                # 记录生成的token
+                branch_generated[branch_idx].append(token_id)
+                new_tokens.append(token_id)
+                active_branch_indices.append(branch_idx)
+
+                # 计算该分支新token的时间坐标
                 new_time = branch_start_y[branch_idx] + branch_lengths[branch_idx]
                 branch_lengths[branch_idx] += 1
-                time_list.append(new_time)
-                position_index = len(time_list) - 1
+                new_times.append(new_time)
 
-                pos2d_token = torch.tensor(
-                    [[[branch_positions[branch_idx], new_time]]],
-                    device=device,
-                    dtype=layout.pos2d.dtype,
-                )
-                position_ids_token = torch.tensor([[position_index]], device=device, dtype=pos1d.dtype)
-                increment_mask = build_incremental_causal_mask(time_list, device)
+                # 计算2D位置
+                new_pos2d.append([branch_positions[branch_idx], new_time])
 
-                set_rope_pos2d(model, pos2d_token)
-                outputs = model(
-                    input_ids=token_tensor.view(1, 1),
-                    attention_mask=increment_mask,
-                    position_ids=position_ids_token,
-                    past_key_values=past,
-                    pos2d=pos2d_token,
-                    use_cache=True,
-                )
-                past = outputs.past_key_values
-                branch_logits[branch_idx] = outputs.logits[0, -1].detach()
-                branch_pos1d_end[branch_idx] = position_index
+                # 计算1D位置(线性序列中的位置)
+                position_index = len(time_list)
+                new_pos1d.append(position_index)
 
+            # 如果没有活跃分支,退出
+            if not new_tokens:
+                break
+
+            # 2. 批量forward所有新token
+            # 构造输入张量
+            batch_input_ids = torch.tensor([new_tokens], dtype=torch.long, device=device)  # [1, num_active]
+            batch_pos1d = torch.tensor([new_pos1d], dtype=torch.long, device=device)  # [1, num_active]
+            batch_pos2d = torch.tensor([new_pos2d], dtype=torch.long, device=device)  # [1, num_active, 2]
+
+            # 更新time_list
+            time_list.extend(new_times)
+
+            # 构造增量mask
+            # 每个新token可以看到所有历史token (time < 当前token的time)
+            num_new = len(new_tokens)
+            total_len = len(time_list)
+
+            # 构造一个 [1, 1, num_new, total_len] 的mask
+            incremental_mask = torch.full(
+                (1, 1, num_new, total_len),
+                fill_value=torch.finfo(torch.float32).min,
+                device=device
+            )
+
+            for i, new_time in enumerate(new_times):
+                for j, hist_time in enumerate(time_list):
+                    if hist_time < new_time or j == total_len - num_new + i:
+                        # 可以看到更早的时间,或者自己
+                        incremental_mask[0, 0, i, j] = 0.0
+
+            # Forward
+            set_rope_pos2d(model, batch_pos2d)
+            outputs = model(
+                input_ids=batch_input_ids,
+                attention_mask=incremental_mask,
+                position_ids=batch_pos1d,
+                past_key_values=past,
+                pos2d=batch_pos2d,
+                use_cache=True,
+            )
+
+            # 更新past
+            past = outputs.past_key_values
+
+            # 更新每个分支的logits
+            for i, branch_idx in enumerate(active_branch_indices):
+                branch_logits[branch_idx] = outputs.logits[0, i].detach()
+                branch_pos1d_end[branch_idx] = new_pos1d[i]
+
+        # 解码结果
         results: List[str] = []
         for generated in branch_generated:
             if tokenizer.eos_token_id in generated:
