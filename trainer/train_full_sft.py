@@ -1,6 +1,9 @@
 import os
 import sys
 
+# 避免 tokenizers fork 警告
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 __package__ = "trainer"
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if root_path not in sys.path:
