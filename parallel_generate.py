@@ -61,14 +61,18 @@ def load_model(args):
 
 
 def apply_chat_template(tokenizer, text: str, enable_chat: bool) -> List[int]:
+    """
+    构造输入格式，需要和训练数据格式一致
+
+    训练数据格式: <|im_start|>问题内容<|im_end|>
+    所以推理时也应该用相同格式，只给问题部分，让模型生成回答
+    """
     if enable_chat:
-        conversation = [{"role": "user", "content": text}]
-        prompt_text = tokenizer.apply_chat_template(
-            conversation,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        # 匹配训练格式: <|im_start|>用户问题<|im_end|>
+        # 注意：不包含回答部分，让模型自己生成
+        prompt_text = f"<|im_start|>{text}"
     else:
+        # 不用模板，直接是纯文本
         prompt_text = text
     return tokenizer(prompt_text, add_special_tokens=False).input_ids
 
