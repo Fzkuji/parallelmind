@@ -53,10 +53,12 @@ class ParallelSFTCollator:
         tokenizer: AutoTokenizer,
         branches_per_sample: int = 4,
         pad_to: Optional[int] = None,
+        random_time_offset: bool = True,
     ) -> None:
         self.tokenizer = tokenizer
         self.branches_per_sample = max(1, branches_per_sample)
         self.pad_to = pad_to
+        self.random_time_offset = random_time_offset
 
     def __call__(self, features: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         samples = []
@@ -79,6 +81,7 @@ class ParallelSFTCollator:
             samples,
             device=torch.device("cpu"),
             pad_to=self.pad_to,
+            random_time_offset=self.random_time_offset,
         )
 
         labels = layout.input_ids.clone()

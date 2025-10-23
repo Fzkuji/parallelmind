@@ -138,6 +138,7 @@ def build_flat_linear_layout(
     pad_to: Optional[int] = None,
     branch_stride: int = DEFAULT_BRANCH_POSITION_STRIDE,
     align_to: Literal["left", "right"] = "left",
+    random_time_offset: bool = False,
 ) -> BatchLayout:
     if align_to not in {"left", "right"}:
         raise ValueError(f"Unsupported align_to value: {align_to}")
@@ -221,6 +222,26 @@ def build_flat_linear_layout(
         branch_pos1d_end = [-1 for _ in branch_sequences]
         answer_token_starts: List[int] = []
 
+        # 为每个branch生成随机time offset（如果启用）
+        import random
+        branch_offsets = []
+        if random_time_offset:
+            for idx in range(len(branch_sequences)):
+                if idx == 0 and main_len > 0:
+                    # main branch不加offset
+                    branch_offsets.append(0)
+                else:
+                    # 根据当前branch的长度动态决定offset范围
+                    branch_len = branch_sequences[idx].numel()
+                    if branch_len > 0:
+                        # offset范围是 [0, branch_len]，确保不会超过文本长度
+                        # 这样短文本offset小，长文本offset可以大
+                        branch_offsets.append(random.randint(0, branch_len))
+                    else:
+                        branch_offsets.append(0)
+        else:
+            branch_offsets = [0] * len(branch_sequences)
+
         for idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
             seq_len = tokens.numel()
             if seq_len == 0:
@@ -245,6 +266,9 @@ def build_flat_linear_layout(
                     else:
                         start_col = 0 if main_len == 0 else main_len
                 times = torch.arange(seq_len, device=device) + start_col
+
+            # 应用branch offset
+            times = times + branch_offsets[idx]
             branch_start_y.append(int(times[0].item()))
 
             if idx == 0 and main_len > 0:

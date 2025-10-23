@@ -237,19 +237,25 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         time_list = time_ids[0, :seq_len].tolist()
         past = outputs.past_key_values
 
-        # 找出所有分支中最大的time (当前已生成的最大列时间)
-        # 过滤掉padding（time_ids == -1）
-        valid_times = [t for t in time_list if t >= 0]
-        if valid_times:
-            current_column_time = max(valid_times) + 1
-        else:
-            current_column_time = 0
+        # 为每个branch维护独立的当前time（独立生成模式）
+        # 每个branch从自己问题结束后的time继续
+        branch_current_times = []
+        for branch_idx in range(branch_count):
+            # 找到该branch的最大time
+            branch_pos = branch_positions[branch_idx]
+            branch_times = [time_list[i] for i in range(seq_len)
+                           if layout.pos2d[0, i, 0].item() == branch_pos]
+            if branch_times:
+                # 该branch下一个生成的time
+                branch_current_times.append(max(branch_times) + 1)
+            else:
+                branch_current_times.append(0)
 
         if debug:
-            print(f"\n=== Generation Start ===")
-            print(f"Starting column time: {current_column_time}")
+            print(f"\n=== Generation Start (Independent Mode) ===")
             print(f"Branch count: {branch_count}")
             print(f"branch_pos1d_end: {metadata.branch_pos1d_end}")
+            print(f"branch_current_times: {branch_current_times}")
 
         stop_flags = [False] * branch_count
         eos_id = tokenizer.eos_token_id
@@ -343,8 +349,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                         skip_special_tokens=True
                     )
 
-                # 计算2D位置 (所有分支使用同一列时间!)
-                new_pos2d.append([branch_positions[branch_idx], current_column_time])
+                # 计算2D位置 (每个分支使用自己的time!)
+                branch_time = branch_current_times[branch_idx]
+                new_pos2d.append([branch_positions[branch_idx], branch_time])
 
                 # 计算1D位置
                 position_index = len(time_list) + len(new_pos1d)
@@ -363,12 +370,17 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             batch_pos1d = torch.tensor([new_pos1d], dtype=torch.long, device=device)  # [1, num_active]
             batch_pos2d = torch.tensor([new_pos2d], dtype=torch.long, device=device)  # [1, num_active, 2]
 
-            # 更新time_list (所有新token使用同一列时间)
-            time_list.extend([current_column_time] * num_new)
+            # 更新time_list (每个token使用自己branch的time)
+            new_times = [new_pos2d[i][1] for i in range(num_new)]
+            time_list.extend(new_times)
             total_len = len(time_list)
 
-            # 3. 构造列同步mask
-            # 关键: 同列的token互不可见, 只能看到time < current_column_time的token
+            # 更新每个branch的当前time
+            for branch_idx in active_branch_indices:
+                branch_current_times[branch_idx] += 1
+
+            # 3. 构造因果mask (基于time的因果关系)
+            # 关键: 只能看到time < 当前token的time 的所有token
             incremental_mask = torch.full(
                 (1, 1, num_new, total_len),
                 fill_value=torch.finfo(torch.float32).min,
@@ -377,9 +389,12 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             )
 
             for i in range(num_new):
+                current_time = new_times[i]
                 for j, hist_time in enumerate(time_list):
-                    if hist_time < current_column_time:
+                    # 可以看到time更早的token
+                    if hist_time < current_time:
                         incremental_mask[0, 0, i, j] = 0.0
+                    # 可以看到自己
                     elif j == total_len - num_new + i:
                         incremental_mask[0, 0, i, j] = 0.0
 
@@ -396,7 +411,6 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
             # 更新状态
             past = outputs.past_key_values
-            current_column_time += 1  # 进入下一列
 
             # Streaming显示更新
             if streaming:
