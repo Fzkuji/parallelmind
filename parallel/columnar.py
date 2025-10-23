@@ -128,7 +128,7 @@ def pad_to_length(x: torch.Tensor, length: int, pad_id: int) -> torch.Tensor:
     return torch.cat([x, pad], dim=-1)
 
 
-DEFAULT_BRANCH_POSITION_STRIDE = 32
+DEFAULT_BRANCH_POSITION_STRIDE = 8
 
 
 def build_flat_linear_layout(
