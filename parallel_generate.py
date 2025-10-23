@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import List, Sequence
 
@@ -97,6 +98,43 @@ def sample_token(logits: torch.Tensor, args) -> torch.Tensor:
     return token_id.view(1)
 
 
+def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final: bool = False):
+    """
+    实时更新多个branch的生成进度
+
+    Args:
+        branch_texts: 每个branch当前生成的文本
+        prompts: 每个branch的原始prompt
+        is_final: 是否是最终结果
+    """
+    # 清空之前的输出（移动到输出区域的起始位置）
+    num_branches = len(branch_texts)
+    if not is_final:
+        # 向上移动光标到输出区域开始
+        sys.stdout.write(f"\033[{num_branches + 1}A")  # 上移 n+1 行
+        sys.stdout.write("\r")  # 回到行首
+
+    # 打印每个branch的当前状态
+    for idx, (prompt, text) in enumerate(zip(prompts, branch_texts)):
+        if is_final:
+            # 最终结果，完整打印
+            print(f"\n=== Branch {idx} ===")
+            print(f"Prompt: {prompt}")
+            print(f"Response: {text}")
+        else:
+            # 流式更新，单行显示
+            # 截断过长的文本用于显示
+            max_display_len = 80
+            display_text = text if len(text) <= max_display_len else text[:max_display_len] + "..."
+            sys.stdout.write(f"\033[K")  # 清除当前行
+            sys.stdout.write(f"Branch {idx}: {display_text}\n")
+
+    if not is_final:
+        sys.stdout.write("\033[K")  # 清除分隔行
+        sys.stdout.write("---\n")
+        sys.stdout.flush()
+
+
 def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, tokenizer) -> List[str]:
     """
     列式并行生成 - 所有分支在同一列时间同步生成
@@ -108,6 +146,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
     """
     device = next(model.parameters()).device
     debug = getattr(args, 'debug', False)
+    streaming = getattr(args, 'streaming', False)
     branches = []
     for tokens in branch_inputs:
         branches.append({"input_ids": list(tokens), "answer_offset": len(tokens)})
@@ -215,6 +254,19 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         stop_flags = [False] * branch_count
         eos_id = tokenizer.eos_token_id
 
+        # Streaming初始化
+        if streaming:
+            # 初始化显示区域
+            original_prompts = [tokenizer.decode(list(tokens), skip_special_tokens=True) for tokens in branch_inputs]
+            branch_texts = ["" for _ in range(branch_count)]
+            print("\n" + "=" * 80)
+            print("开始生成...")
+            print("=" * 80)
+            # 预留显示空间
+            for i in range(branch_count):
+                print(f"Branch {i}: ")
+            print("---")
+
         # 增量生成循环 - 列同步
         for step_idx in range(args.max_new_tokens):
             if all(stop_flags):
@@ -283,6 +335,14 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
 
+                # Streaming更新
+                if streaming:
+                    # 解码当前branch的所有生成内容
+                    branch_texts[branch_idx] = tokenizer.decode(
+                        branch_generated[branch_idx],
+                        skip_special_tokens=True
+                    )
+
                 # 计算2D位置 (所有分支使用同一列时间!)
                 new_pos2d.append([branch_positions[branch_idx], current_column_time])
 
@@ -338,6 +398,10 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             past = outputs.past_key_values
             current_column_time += 1  # 进入下一列
 
+            # Streaming显示更新
+            if streaming:
+                print_streaming_update(branch_texts, original_prompts, is_final=False)
+
         # 解码结果
         if debug:
             print(f"\n=== Decoding Results ===")
@@ -355,6 +419,11 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 generated_slice = generated
             text = tokenizer.decode(generated_slice, skip_special_tokens=True)
             results.append(text.strip())
+
+        # Streaming最终显示
+        if streaming:
+            print_streaming_update(results, original_prompts, is_final=True)
+
         return results
 
 
@@ -377,6 +446,7 @@ def main():
     parser.add_argument("--max_prompt_length", type=int, default=2048)
     parser.add_argument("--chat_template", action="store_true")
     parser.add_argument("--debug", action="store_true", help="启用调试输出")
+    parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     args = parser.parse_args()
 
     model, tokenizer = load_model(args)
@@ -386,11 +456,14 @@ def main():
         batch_prompts = prompts[start : start + args.branches_per_sample]
         branch_inputs = [apply_chat_template(tokenizer, p, args.chat_template) for p in batch_prompts]
         responses = columnar_generate(model, branch_inputs, args, tokenizer)
-        for prompt, response in zip(batch_prompts, responses):
-            print("\n=== Prompt ===")
-            print(prompt)
-            print("--- Response ---")
-            print(response if response else "(空响应)")
+
+        # 如果不是streaming模式，打印结果（streaming模式已经在generate函数内打印了）
+        if not args.streaming:
+            for prompt, response in zip(batch_prompts, responses):
+                print("\n=== Prompt ===")
+                print(prompt)
+                print("--- Response ---")
+                print(response if response else "(空响应)")
 
 
 if __name__ == "__main__":
