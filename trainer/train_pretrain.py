@@ -164,7 +164,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=8)
     parser.add_argument('--use_moe', default=False, type=bool)
-    default_data_path = os.path.join(root_path, "dataset", "pretrain_hq.jsonl")
+    default_data_path = os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
     parser.add_argument("--max_total_tokens", type=int, default=4096)
     args = parser.parse_args()
