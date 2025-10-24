@@ -40,10 +40,10 @@ def get_lr(current_step, total_steps, lr):
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
-    processed_texts = 0  # 累计已使用的原始文本数
-    processed_samples = 0  # 累计已训练的样本数（collator 输出的序列数）
-    samples_since_log = 0  # 自上次日志以来训练的样本数
-    texts_since_log = 0  # 自上次日志以来消耗的原始文本数
+    processed_dataset_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数）
+    processed_collator_samples = 0  # 累计生成的训练样本数（collator 输出的序列数）
+    collator_samples_since_log = 0  # 自上次日志以来生成的训练样本数
+    dataset_samples_since_log = 0  # 自上次日志以来消耗的数据集样本数
 
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
@@ -55,10 +55,10 @@ def train_epoch(epoch, wandb):
         # 更新计数
         batch_samples = batch["input_ids"].shape[0]  # 这个 batch 实际的 training samples 数
         batch_dataset_samples = int(branch_counts.sum().item())  # 这个 batch 使用的原始文本数
-        processed_samples += batch_samples
-        processed_texts += batch_dataset_samples
-        samples_since_log += batch_samples
-        texts_since_log += batch_dataset_samples
+        processed_collator_samples += batch_samples
+        processed_dataset_samples += batch_dataset_samples
+        collator_samples_since_log += batch_samples
+        dataset_samples_since_log += batch_dataset_samples
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
@@ -94,7 +94,7 @@ def train_epoch(epoch, wandb):
             # 计算实际的 batch 信息
             batch_seq_len = batch["input_ids"].shape[1]
             # 估算剩余时间（基于已处理的原始文本比例）
-            progress_ratio = processed_texts / total_samples if total_samples > 0 else 0
+            progress_ratio = processed_dataset_samples / total_samples if total_samples > 0 else 0
             if progress_ratio > 0:
                 estimated_total_time = spend_time / progress_ratio
                 remaining_time = estimated_total_time - spend_time
@@ -102,22 +102,21 @@ def train_epoch(epoch, wandb):
                 remaining_time = 0
 
             Logger(
-                'Epoch:[{}/{}] samples:{} texts:{}/{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] step_samples:{} step_texts:{} epoch_Time:{}min:'.format(
+                'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} batch:[{}x{}] dataset_samples:{} collator_samples:{} epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
-                    processed_samples,
-                    processed_texts,
+                    processed_dataset_samples,
                     total_samples,
                     loss.item() * args.accumulation_steps,
                     optimizer.param_groups[-1]['lr'],
                     batch_samples,
                     batch_seq_len,
-                    samples_since_log,
-                    texts_since_log,
+                    dataset_samples_since_log,
+                    collator_samples_since_log,
                     int(remaining_time // 60)))
 
-            samples_since_log = 0
-            texts_since_log = 0
+            collator_samples_since_log = 0
+            dataset_samples_since_log = 0
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                 wandb.log({"loss": loss.item() * args.accumulation_steps,
