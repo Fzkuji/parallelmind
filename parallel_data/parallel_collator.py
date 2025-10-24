@@ -32,12 +32,10 @@ class ParallelPretrainCollator:
         samples = []
 
         if self.dynamic_mode:
-            # 动态模式：每个 sample 的 branches 数量随机
+            # 动态模式：每个 sample 的 branches 数量随机，samples 数量不固定
             idx = 0
             while idx < len(texts):
-                # 随机决定这个 sample 的 branches 数量
                 num_branches = random.randint(self.min_branches, self.max_branches)
-                # 确保不超过剩余文本数量
                 num_branches = min(num_branches, len(texts) - idx)
 
                 if num_branches >= self.min_branches:
@@ -46,7 +44,6 @@ class ParallelPretrainCollator:
                     samples.append({"main": "", "branches": branches})
                     idx += num_branches
                 elif num_branches > 0:
-                    # 即使不足最小数量，也不浪费剩余的文本
                     chunk = texts[idx : idx + num_branches]
                     branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                     samples.append({"main": "", "branches": branches})
@@ -61,12 +58,10 @@ class ParallelPretrainCollator:
                     branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                     samples.append({"main": "", "branches": branches})
                 elif len(chunk) > 0:
-                    # 处理最后剩余的不足数量的样本
                     branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                     samples.append({"main": "", "branches": branches})
 
         if not samples and len(texts) > 0:
-            # 如果没有样本但有文本，至少创建一个
             branches = [{"text": txt, "answer_offset": 0} for txt in texts]
             samples.append({"main": "", "branches": branches})
 
