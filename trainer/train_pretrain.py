@@ -41,9 +41,6 @@ def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
     processed_dataset_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数）
-    processed_collator_samples = 0  # 累计生成的训练样本数（collator 输出的序列数）
-    last_logged_dataset_samples = 0
-    last_logged_collator_samples = 0
 
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
@@ -53,9 +50,7 @@ def train_epoch(epoch, wandb):
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
 
         # 更新计数
-        batch_samples = batch["input_ids"].shape[0]  # 这个 batch 实际的 training samples 数
         batch_dataset_samples = int(branch_counts.sum().item())  # 这个 batch 使用的原始文本数
-        processed_collator_samples += batch_samples
         processed_dataset_samples += batch_dataset_samples
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
@@ -108,12 +103,9 @@ def train_epoch(epoch, wandb):
                     step,
                     loss.item() * args.accumulation_steps,
                     optimizer.param_groups[-1]['lr'],
-                    batch_samples,
+                    batch["input_ids"].shape[0],
                     batch_seq_len,
                     int(remaining_time // 60)))
-
-            last_logged_dataset_samples = processed_dataset_samples
-            last_logged_collator_samples = processed_collator_samples
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                 wandb.log({"loss": loss.item() * args.accumulation_steps,
@@ -212,9 +204,10 @@ if __name__ == "__main__":
     # 默认模式：batch_size 已经表示文本数量（兼容旧行为）
     if args.batch_by_samples:
         if args.max_branches_per_sample is not None:
-            effective_batch_size = args.batch_size * args.max_branches_per_sample
+            avg_branches = (args.min_branches_per_sample + args.max_branches_per_sample) / 2
         else:
-            effective_batch_size = args.batch_size * args.branches_per_sample
+            avg_branches = args.branches_per_sample
+        effective_batch_size = max(1, int(args.batch_size * avg_branches))
     else:
         effective_batch_size = args.batch_size * branches_multiplier
 

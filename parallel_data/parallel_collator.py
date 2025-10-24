@@ -38,62 +38,32 @@ class ParallelPretrainCollator:
         if self.dynamic_mode:
             target_samples = self.target_samples
             if target_samples is not None and target_samples > 0:
-                available = len(self._buffer)
-                if available == 0:
-                    # 没有可用文本时直接返回空样本（不太可能发生）
-                    samples = []
-                else:
-                    # 每个 batch 的目标原始样本数在 [batch_size * min_branches, batch_size * max_branches] 之间随机
-                    min_total = target_samples * self.min_branches
-                    max_total = target_samples * self.max_branches
-                    if max_total <= 0:
-                        max_total = target_samples
+                for sample_idx in range(target_samples):
+                    available = len(self._buffer)
+                    remaining_slots = target_samples - sample_idx
 
-                    upper_bound = min(available, max_total) if max_total > 0 else available
-                    # 确保下界不超过上界，且至少能为每个 sample 分配 1 条数据
-                    lower_bound = max(target_samples, min_total)
-                    if available < lower_bound:
-                        lower_bound = max(target_samples, min(available, upper_bound))
+                    # 如果没有足够的文本来构建一个 sample，则停止，让剩余文本留待下一次使用
+                    if available < self.min_branches:
+                        break
 
-                    if upper_bound < lower_bound:
-                        lower_bound = upper_bound
+                    if remaining_slots > 1:
+                        max_assignable = available - (remaining_slots - 1) * self.min_branches
+                        if max_assignable < self.min_branches:
+                            # 无法满足后续 sample 的最小需求，保留剩余文本到下次
+                            break
+                        max_assignable = min(max_assignable, self.max_branches)
+                    else:
+                        max_assignable = min(self.max_branches, available)
 
-                    target_total = upper_bound if upper_bound == lower_bound else random.randint(lower_bound, upper_bound)
+                    max_assignable = max(self.min_branches, max_assignable)
+                    num_branches = random.randint(self.min_branches, max_assignable)
+                    num_branches = min(num_branches, available)
+                    chunk = [self._buffer.popleft() for _ in range(num_branches)]
+                    if not chunk:
+                        break
 
-                    # 实际能够构建的样本数不能超过 target_total
-                    effective_samples = max(1, min(target_samples, target_total))
-
-                    selected_texts = [self._buffer.popleft() for _ in range(target_total)]
-                    remaining_texts = target_total
-                    start_idx = 0
-
-                    for sample_idx in range(effective_samples):
-                        remaining_slots = effective_samples - sample_idx
-                        if remaining_slots == 1:
-                            num_branches = remaining_texts
-                        else:
-                            min_remaining = (remaining_slots - 1) * self.min_branches
-                            max_remaining = (remaining_slots - 1) * self.max_branches
-
-                            low = max(self.min_branches, remaining_texts - max_remaining)
-                            high = min(self.max_branches, remaining_texts - min_remaining)
-                            if low > high:
-                                high = low
-
-                            num_branches = random.randint(low, high)
-
-                        chunk = selected_texts[start_idx : start_idx + num_branches]
-                        if not chunk:
-                            continue
-                        branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
-                        samples.append({"main": "", "branches": branches})
-                        start_idx += num_branches
-                        remaining_texts -= num_branches
-
-                    # 如果仍有剩余文本，放回缓冲区，供下一个 batch 使用
-                    if remaining_texts > 0:
-                        for txt in reversed(selected_texts[-remaining_texts:]):
-                            self._buffer.appendleft(txt)
+                    branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+                    samples.append({"main": "", "branches": branches})
             else:
                 # 动态模式：每个 sample 的 branches 数量随机，samples 数量不固定
                 idx = 0
