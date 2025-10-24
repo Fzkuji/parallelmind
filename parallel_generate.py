@@ -2,7 +2,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Sequence
+from typing import Any, List, Sequence
 
 import torch
 from transformers import AutoTokenizer
@@ -16,27 +16,33 @@ from parallel.columnar import (
 )
 
 
-def load_prompts(args) -> List[str]:
+def load_prompts(args) -> List[Any]:
     if args.prompts:
         return list(args.prompts)
     if args.prompts_file:
         path = Path(args.prompts_file)
         if path.suffix == ".jsonl":
-            prompts: List[str] = []
+            prompts: List[Any] = []
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
                     if not line.strip():
                         continue
                     record = json.loads(line)
-                    prompts.append(str(record.get("prompt", record.get("question", ""))))
+                    if args.mode == "pretrain":
+                        prompts.append(record)
+                    else:
+                        prompts.append(str(record.get("prompt", record.get("question", ""))))
             return prompts
         return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    return [
+    default_prompts: List[Any] = [
         "请介绍一下自己。",
         "推荐几本好书。",
         "未来的科技趋势是什么？",
         "如何理解大语言模型？",
     ]
+    if args.mode == "pretrain":
+        return [[p] for p in default_prompts]
+    return default_prompts
 
 
 def load_model(args):
@@ -51,7 +57,12 @@ def load_model(args):
         inference_rope_scaling=args.inference_rope_scaling,
     )
 
-    ckpt_path = Path(args.model_path) if args.model_path else Path(args.out_dir) / f"full_sft_{args.hidden_size}{'_moe' if args.use_moe else ''}.pth"
+    if args.model_path:
+        ckpt_path = Path(args.model_path)
+    else:
+        suffix = "_moe" if args.use_moe else ""
+        prefix = "pretrain" if args.mode == "pretrain" else "full_sft"
+        ckpt_path = Path(args.out_dir) / f"{prefix}_{args.hidden_size}{suffix}.pth"
     if not ckpt_path.exists():
         raise FileNotFoundError(f"未找到模型权重: {ckpt_path}")
 
@@ -76,6 +87,25 @@ def apply_chat_template(tokenizer, text: str, enable_chat: bool) -> List[int]:
         # 不用模板，直接是纯文本
         prompt_text = text
     return tokenizer(prompt_text, add_special_tokens=False).input_ids
+
+
+def normalize_pretrain_branches(item: Any) -> List[str]:
+    if isinstance(item, dict):
+        if "branches" in item and isinstance(item["branches"], Sequence):
+            return [str(x) for x in item["branches"] if str(x).strip()]
+        if "text" in item:
+            text = str(item["text"])
+            if "||" in text:
+                return [seg.strip() for seg in text.split("||") if seg.strip()]
+            return [text]
+        if "prompt" in item:
+            return [str(item["prompt"])]
+    if isinstance(item, (list, tuple)):
+        return [str(x) for x in item if str(x).strip()]
+    text = str(item)
+    if "||" in text:
+        return [seg.strip() for seg in text.split("||") if seg.strip()]
+    return [text]
 
 
 def sample_token(logits: torch.Tensor, args) -> torch.Tensor:

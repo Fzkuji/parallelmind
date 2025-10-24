@@ -7,11 +7,18 @@ from transformers import AutoTokenizer
 
 
 class ParallelPretrainDataset(Dataset):
-    def __init__(self, data_path: str) -> None:
+    def __init__(
+        self,
+        data_path: str,
+        slice_count: Optional[int] = None,
+        slice_index: int = 0,
+    ) -> None:
         super().__init__()
         self.data_path = data_path
         self.offsets: List[int] = []
         self._file_handle = None
+        self.slice_count = slice_count
+        self.slice_index = slice_index
 
         # 只构建索引，不加载数据
         with open(data_path, "r", encoding="utf-8") as handle:
@@ -21,7 +28,27 @@ class ParallelPretrainDataset(Dataset):
                     self.offsets.append(offset)
                 offset += len(line.encode('utf-8'))
 
-        print(f"数据集初始化完成: {len(self.offsets):,} 个样本")
+        total_samples = len(self.offsets)
+
+        if self.slice_count is not None:
+            if self.slice_count <= 0:
+                raise ValueError(f"slice_count must be positive, got {self.slice_count}")
+            if not (0 <= self.slice_index < self.slice_count):
+                raise ValueError(
+                    f"slice_index must be in [0, {self.slice_count - 1}], got {self.slice_index}"
+                )
+
+            original_offsets = self.offsets
+            self.offsets = [
+                offset_value
+                for sample_idx, offset_value in enumerate(original_offsets)
+                if sample_idx % self.slice_count == self.slice_index
+            ]
+            print(
+                f"数据集初始化完成: {total_samples:,} 个样本 | 应用 branch 切分 {self.slice_index + 1}/{self.slice_count} 后剩余 {len(self.offsets):,} 个样本"
+            )
+        else:
+            print(f"数据集初始化完成: {total_samples:,} 个样本")
 
     def __len__(self) -> int:
         return len(self.offsets)

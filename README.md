@@ -314,6 +314,41 @@ python train_pretrain.py
 torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --batch_size 4  --epochs 2
 ```
 
+<details>
+<summary>预训练流程示例（逐 branch → 动态多分支）</summary>
+
+以下命令默认在仓库根目录执行（若已 `cd trainer`，可去掉命令中的 `trainer/` 前缀）。
+
+1. **逐个 branch 维度循环训练（可选但推荐预热）**
+
+   ```bash
+   python trainer/train_pretrain.py \
+     --epochs 1 \
+     --batch_size 4 \
+     --branches_per_sample 1 \
+     --branch_slice_count 8 \
+     --branch_loop_all \
+     --out_dir out/pretrain_branch_sweep
+   ```
+
+   加了 `--branch_loop_all` 后，脚本会在一次运行中自动遍历 branch 维度 0→7；每个分片训练结束，模型参数会直接保留并继续训练下一个分片，最终输出保存在 `out/pretrain_branch_sweep/pretrain_512.pth`（若隐藏维度不同，请替换文件名中的 `512`）。
+
+2. **阶段二：加载上一阶段权重，进行动态多分支训练（1-32 分支）**
+
+   ```bash
+   python trainer/train_pretrain.py \
+     --epochs 1 \
+     --batch_size 4 \
+     --batch_by_samples \
+     --max_branches_per_sample 32 \
+     --min_branches_per_sample 1 \
+     --max_total_tokens 0 \
+     --init_weight out/pretrain_branch_sweep/pretrain_512.pth \
+     --out_dir out/pretrain_dynamic
+   ```
+
+</details>
+
 > 执行预训练，得到 `pretrain_*.pth` 作为预训练的输出权重（其中*为模型的dimension，默认为512）
 
 
@@ -1460,5 +1495,3 @@ ollama run minimind2
 # License
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).
-
-

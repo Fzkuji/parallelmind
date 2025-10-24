@@ -143,6 +143,17 @@ def init_model(lm_config):
     model = MiniMindForCausalLM(lm_config)
     model.resize_token_embeddings(vocab_size)
     model = model.to(args.device)
+
+    if args.init_weight:
+        init_path = args.init_weight
+        if not os.path.isabs(init_path):
+            init_path = os.path.join(root_path, init_path)
+        if not os.path.exists(init_path):
+            raise FileNotFoundError(f"init_weight checkpoint not found: {init_path}")
+        Logger(f"加载初始权重: {init_path}")
+        state_dict = torch.load(init_path, map_location=args.device)
+        model.load_state_dict(state_dict, strict=False)
+
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     return model, tokenizer
 
@@ -192,10 +203,30 @@ if __name__ == "__main__":
     default_data_path = os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
     parser.add_argument("--max_total_tokens", type=int, default=4096)
+    parser.add_argument("--init_weight", type=str, default=None, help="Warm-start from an existing checkpoint (path to pretrain_*.pth)")
+    parser.add_argument("--branch_slice_count", type=int, default=None, help="Divide dataset into N slices (e.g., branch dimension count)")
+    parser.add_argument("--branch_slice_index", type=int, default=0, help="Select which slice to train on (0-based)")
+    parser.add_argument("--branch_loop_all", action="store_true", help="Iterate through all branch slices sequentially in one run")
     args = parser.parse_args()
 
     # 声明全局变量
     global total_samples, effective_batch_size, iter_per_epoch
+
+    if args.branch_slice_count is not None and args.branch_slice_count <= 0:
+        raise ValueError("--branch_slice_count must be positive")
+
+    if args.branch_slice_count is None:
+        slice_indices = [None]
+    else:
+        if args.branch_loop_all:
+            slice_indices = list(range(args.branch_slice_count))
+        else:
+            slice_indices = [args.branch_slice_index]
+        for idx in slice_indices:
+            if idx is not None and not (0 <= idx < args.branch_slice_count):
+                raise ValueError(
+                    f"--branch_slice_index must be within [0, {args.branch_slice_count - 1}], got {idx}"
+                )
 
     # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
     branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
@@ -261,7 +292,6 @@ if __name__ == "__main__":
         wandb = None
 
     model, tokenizer = init_model(lm_config)
-    train_ds = ParallelPretrainDataset(args.data_path)
     collator = ParallelPretrainCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
@@ -272,29 +302,45 @@ if __name__ == "__main__":
     )
     if args.batch_by_samples:
         collator.target_samples = args.batch_size
-    # 使用 drop_last=False 来确保所有数据都被训练，特别是在动态 branches 模式下
-    drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
-    train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=effective_batch_size,
-        pin_memory=True,
-        drop_last=drop_last,
-        shuffle=False,
-        num_workers=args.num_workers,
-        sampler=train_sampler,
-        collate_fn=collator,
-    )
-
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ["float16", "bfloat16"]))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
-
-    # 赋值全局变量供 train_epoch 使用
-    total_samples = len(train_ds)  # 数据集总文本数（原始行数）
-    iter_per_epoch = len(train_loader)
-
     if ddp:
         model._ddp_params_and_buffers_to_ignore = {"pos_cis"}
         model = DistributedDataParallel(model, device_ids=[ddp_local_rank])
-    for epoch in range(args.epochs):
-        train_epoch(epoch, wandb)
+
+    total_slices = len(slice_indices)
+    for slice_pos, slice_idx in enumerate(slice_indices):
+        dataset_kwargs = {}
+        slice_desc = "full"
+        if args.branch_slice_count is not None and slice_idx is not None:
+            dataset_kwargs = {"slice_count": args.branch_slice_count, "slice_index": slice_idx}
+            slice_desc = f"{slice_idx + 1}/{args.branch_slice_count}"
+            Logger(f"=== 开始训练 branch slice {slice_desc} ===")
+
+        train_ds = ParallelPretrainDataset(args.data_path, **dataset_kwargs)
+        collator._buffer.clear()
+        drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
+        train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=effective_batch_size,
+            pin_memory=True,
+            drop_last=drop_last,
+            shuffle=False,
+            num_workers=args.num_workers,
+            sampler=train_sampler,
+            collate_fn=collator,
+        )
+
+        total_samples = len(train_ds)
+        iter_per_epoch = len(train_loader)
+
+        if iter_per_epoch == 0:
+            Logger("当前切片没有样本，跳过。")
+            continue
+
+        for epoch in range(args.epochs):
+            train_epoch(epoch, wandb)
+
+        if args.branch_slice_count is not None and slice_idx is not None:
+            Logger(f"=== 完成 branch slice {slice_desc} ===")
