@@ -204,14 +204,10 @@ if __name__ == "__main__":
     # batch_by_samples 模式：batch_size 表示 samples 数量，需要乘以 branches 来获取文本数量
     # 默认模式：batch_size 已经表示文本数量（兼容旧行为）
     if args.batch_by_samples:
-        # 在动态 branches 模式下，为了获得大约 batch_size 个 samples，
-        # 需要取大约 batch_size * avg_branches 个文本
-        # 使用 (min + max) / 2 作为平均值估计
         if args.max_branches_per_sample is not None:
-            avg_branches = (args.min_branches_per_sample + args.max_branches_per_sample) / 2
+            effective_batch_size = args.batch_size * args.max_branches_per_sample
         else:
-            avg_branches = args.branches_per_sample
-        effective_batch_size = int(args.batch_size * avg_branches)
+            effective_batch_size = args.batch_size * args.branches_per_sample
     else:
         effective_batch_size = args.batch_size * branches_multiplier
 

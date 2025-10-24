@@ -1,4 +1,5 @@
-from typing import Dict, List, Optional
+from collections import deque
+from typing import Deque, Dict, List, Optional
 
 import torch
 from transformers import AutoTokenizer
@@ -25,75 +26,106 @@ class ParallelPretrainCollator:
         self.dynamic_mode = max_branches_per_sample is not None
         self.random_time_offset = random_time_offset
         self.target_samples: Optional[int] = None  # 由训练脚本在 batch_by_samples 模式下设置
+        self._buffer: Deque[str] = deque()
 
     def __call__(self, features: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
         import random
 
         texts = [str(f["text"]) for f in features]
+        self._buffer.extend(texts)
         samples = []
 
         if self.dynamic_mode:
             target_samples = self.target_samples
             if target_samples is not None and target_samples > 0:
-                total_texts = len(texts)
-                # 保证目标 sample 数不会超过可用文本数（每个 sample 至少需要 min_branches 个文本）
-                max_possible_samples = max(1, total_texts // self.min_branches)
-                target_samples = min(target_samples, max_possible_samples)
+                available = len(self._buffer)
+                if available == 0:
+                    # 没有可用文本时直接返回空样本（不太可能发生）
+                    samples = []
+                else:
+                    # 每个 batch 的目标原始样本数在 [batch_size * min_branches, batch_size * max_branches] 之间随机
+                    min_total = target_samples * self.min_branches
+                    max_total = target_samples * self.max_branches
+                    if max_total <= 0:
+                        max_total = target_samples
 
-                remaining_texts = total_texts
-                start_idx = 0
-                for sample_idx in range(target_samples):
-                    remaining_slots = target_samples - sample_idx
-                    if remaining_texts <= 0:
-                        break
-                    # 计算当前 sample 可用的分配范围，确保剩余文本足够后续 sample 的最小需求
-                    min_remaining = (remaining_slots - 1) * self.min_branches
-                    max_remaining = (remaining_slots - 1) * self.max_branches
+                    upper_bound = min(available, max_total) if max_total > 0 else available
+                    # 确保下界不超过上界，且至少能为每个 sample 分配 1 条数据
+                    lower_bound = max(target_samples, min_total)
+                    if available < lower_bound:
+                        lower_bound = max(target_samples, min(available, upper_bound))
 
-                    low = max(self.min_branches, remaining_texts - max_remaining)
-                    high = min(self.max_branches, remaining_texts - min_remaining)
-                    if remaining_slots == 1:
-                        num_branches = remaining_texts
-                    else:
-                        if low > high:
-                            low = max(self.min_branches, remaining_texts - min_remaining)
-                            high = max(low, remaining_texts - min_remaining)
-                        num_branches = random.randint(low, max(low, high))
+                    if upper_bound < lower_bound:
+                        lower_bound = upper_bound
 
-                    chunk = texts[start_idx : start_idx + num_branches]
-                    if chunk:
+                    target_total = upper_bound if upper_bound == lower_bound else random.randint(lower_bound, upper_bound)
+
+                    # 实际能够构建的样本数不能超过 target_total
+                    effective_samples = max(1, min(target_samples, target_total))
+
+                    selected_texts = [self._buffer.popleft() for _ in range(target_total)]
+                    remaining_texts = target_total
+                    start_idx = 0
+
+                    for sample_idx in range(effective_samples):
+                        remaining_slots = effective_samples - sample_idx
+                        if remaining_slots == 1:
+                            num_branches = remaining_texts
+                        else:
+                            min_remaining = (remaining_slots - 1) * self.min_branches
+                            max_remaining = (remaining_slots - 1) * self.max_branches
+
+                            low = max(self.min_branches, remaining_texts - max_remaining)
+                            high = min(self.max_branches, remaining_texts - min_remaining)
+                            if low > high:
+                                high = low
+
+                            num_branches = random.randint(low, high)
+
+                        chunk = selected_texts[start_idx : start_idx + num_branches]
+                        if not chunk:
+                            continue
                         branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                         samples.append({"main": "", "branches": branches})
                         start_idx += num_branches
-                    remaining_texts -= num_branches
+                        remaining_texts -= num_branches
 
-                # 如果还有剩余文本，将其追加到最后一个 sample，避免浪费数据
-                if remaining_texts > 0 and samples and start_idx < len(texts):
-                    extra_chunk = texts[start_idx:]
-                    samples[-1]["branches"].extend({"text": txt, "answer_offset": 0} for txt in extra_chunk)
+                    # 如果仍有剩余文本，放回缓冲区，供下一个 batch 使用
+                    if remaining_texts > 0:
+                        for txt in reversed(selected_texts[-remaining_texts:]):
+                            self._buffer.appendleft(txt)
             else:
                 # 动态模式：每个 sample 的 branches 数量随机，samples 数量不固定
                 idx = 0
-                while idx < len(texts):
+                buffered_texts = list(self._buffer)
+                self._buffer.clear()
+                while idx < len(buffered_texts):
                     num_branches = random.randint(self.min_branches, self.max_branches)
-                    num_branches = min(num_branches, len(texts) - idx)
+                    num_branches = min(num_branches, len(buffered_texts) - idx)
 
                     if num_branches >= self.min_branches:
-                        chunk = texts[idx : idx + num_branches]
+                        chunk = buffered_texts[idx : idx + num_branches]
                         branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                         samples.append({"main": "", "branches": branches})
                         idx += num_branches
                     elif num_branches > 0:
-                        chunk = texts[idx : idx + num_branches]
+                        chunk = buffered_texts[idx : idx + num_branches]
                         branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                         samples.append({"main": "", "branches": branches})
-                        break
+                        idx += num_branches
                     else:
                         break
+
+                # 剩余未使用的文本重新放回缓冲区
+                if idx < len(buffered_texts):
+                    for txt in buffered_texts[idx:]:
+                        self._buffer.append(txt)
         else:
             # 固定模式：每个 sample 固定 branches 数量
-            for idx in range(0, len(texts), self.branches_per_sample):
-                chunk = texts[idx : idx + self.branches_per_sample]
+            current = list(self._buffer)
+            self._buffer.clear()
+            for idx in range(0, len(current), self.branches_per_sample):
+                chunk = current[idx : idx + self.branches_per_sample]
                 if len(chunk) >= self.branches_per_sample:
                     branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                     samples.append({"main": "", "branches": branches})
@@ -101,8 +133,17 @@ class ParallelPretrainCollator:
                     branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                     samples.append({"main": "", "branches": branches})
 
+            # 固定模式下，剩余文本放回缓冲区
+            unused = len(current) % self.branches_per_sample
+            if unused:
+                for txt in current[-unused:]:
+                    self._buffer.append(txt)
+
         if not samples and len(texts) > 0:
-            branches = [{"text": txt, "answer_offset": 0} for txt in texts]
+            branches = [{"text": txt, "answer_offset": 0} for txt in list(self._buffer)]
+            if not branches:
+                branches = [{"text": txt, "answer_offset": 0} for txt in texts]
+            self._buffer.clear()
             samples.append({"main": "", "branches": branches})
 
         layout = build_flat_linear_layout(
