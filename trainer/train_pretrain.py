@@ -167,6 +167,7 @@ if __name__ == "__main__":
     parser.add_argument('--min_branches_per_sample', type=int, default=1, help='Minimum branches per sample for dynamic mode')
     parser.add_argument('--random_time_offset', action='store_true', default=True, help='Enable random time offset for branches during training')
     parser.add_argument('--no_random_time_offset', action='store_false', dest='random_time_offset', help='Disable random time offset')
+    parser.add_argument('--batch_by_samples', action='store_true', default=False, help='If True, batch_size refers to number of samples (not texts). Better for dynamic branches.')
     parser.add_argument('--use_moe', default=False, type=bool)
     default_data_path = os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
@@ -176,6 +177,20 @@ if __name__ == "__main__":
     # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
     branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
 
+    # batch_by_samples 模式：batch_size 表示 samples 数量，需要乘以 branches 来获取文本数量
+    # 默认模式：batch_size 已经表示文本数量（兼容旧行为）
+    if args.batch_by_samples:
+        # 在动态 branches 模式下，为了获得大约 batch_size 个 samples，
+        # 需要取大约 batch_size * avg_branches 个文本
+        # 使用 (min + max) / 2 作为平均值估计
+        if args.max_branches_per_sample is not None:
+            avg_branches = (args.min_branches_per_sample + args.max_branches_per_sample) / 2
+        else:
+            avg_branches = args.branches_per_sample
+        effective_batch_size = int(args.batch_size * avg_branches)
+    else:
+        effective_batch_size = args.batch_size * branches_multiplier
+
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=args.use_moe)
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)
@@ -184,8 +199,15 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
-    # 使用 max_branches（如果启用动态模式）来计算 tokens_per_iter
-    tokens_per_iter = args.batch_size * branches_multiplier * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
+    # 计算 tokens_per_iter
+    if args.batch_by_samples:
+        # batch_by_samples 模式：batch_size 表示 samples 数量
+        tokens_per_iter = args.batch_size * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
+    else:
+        # 默认模式：batch_size * branches 表示文本数量
+        # 每个 sample 大约有 max_total_tokens 个 tokens
+        # 但这只是估计值
+        tokens_per_iter = args.batch_size * branches_multiplier * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
@@ -228,13 +250,14 @@ if __name__ == "__main__":
         min_branches_per_sample=args.min_branches_per_sample,
         random_time_offset=args.random_time_offset,
     )
-    train_sampler = DistributedSampler(train_ds, drop_last=True) if ddp else None
-    effective_batch_size = args.batch_size * branches_multiplier
+    # 使用 drop_last=False 来确保所有数据都被训练，特别是在动态 branches 模式下
+    drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
+    train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
     train_loader = DataLoader(
         train_ds,
         batch_size=effective_batch_size,
         pin_memory=True,
-        drop_last=True,
+        drop_last=drop_last,
         shuffle=False,
         num_workers=args.num_workers,
         sampler=train_sampler,

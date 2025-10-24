@@ -45,20 +45,29 @@ class ParallelPretrainCollator:
                     branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
                     samples.append({"main": "", "branches": branches})
                     idx += num_branches
+                elif num_branches > 0:
+                    # 即使不足最小数量，也不浪费剩余的文本
+                    chunk = texts[idx : idx + num_branches]
+                    branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+                    samples.append({"main": "", "branches": branches})
+                    break
                 else:
                     break
         else:
             # 固定模式：每个 sample 固定 branches 数量
             for idx in range(0, len(texts), self.branches_per_sample):
                 chunk = texts[idx : idx + self.branches_per_sample]
-                if len(chunk) < self.branches_per_sample:
-                    break
-                branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
-                samples.append({"main": "", "branches": branches})
+                if len(chunk) >= self.branches_per_sample:
+                    branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+                    samples.append({"main": "", "branches": branches})
+                elif len(chunk) > 0:
+                    # 处理最后剩余的不足数量的样本
+                    branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+                    samples.append({"main": "", "branches": branches})
 
-        if not samples:
-            # 如果没有足够的样本，至少创建一个
-            branches = [{"text": txt, "answer_offset": 0} for txt in texts[:min(len(texts), self.max_branches)]]
+        if not samples and len(texts) > 0:
+            # 如果没有样本但有文本，至少创建一个
+            branches = [{"text": txt, "answer_offset": 0} for txt in texts]
             samples.append({"main": "", "branches": branches})
 
         layout = build_flat_linear_layout(
