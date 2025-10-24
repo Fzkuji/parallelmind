@@ -42,8 +42,6 @@ def train_epoch(epoch, wandb):
     start_time = time.time()
     processed_dataset_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数）
     processed_collator_samples = 0  # 累计生成的训练样本数（collator 输出的序列数）
-    collator_samples_since_log = 0  # 自上次日志以来生成的训练样本数
-    dataset_samples_since_log = 0  # 自上次日志以来消耗的数据集样本数
 
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
@@ -57,8 +55,6 @@ def train_epoch(epoch, wandb):
         batch_dataset_samples = int(branch_counts.sum().item())  # 这个 batch 使用的原始文本数
         processed_collator_samples += batch_samples
         processed_dataset_samples += batch_dataset_samples
-        collator_samples_since_log += batch_samples
-        dataset_samples_since_log += batch_dataset_samples
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
@@ -111,12 +107,9 @@ def train_epoch(epoch, wandb):
                     optimizer.param_groups[-1]['lr'],
                     batch_samples,
                     batch_seq_len,
-                    dataset_samples_since_log,
-                    collator_samples_since_log,
+                    batch_dataset_samples,
+                    batch_samples,
                     int(remaining_time // 60)))
-
-            collator_samples_since_log = 0
-            dataset_samples_since_log = 0
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                 wandb.log({"loss": loss.item() * args.accumulation_steps,
