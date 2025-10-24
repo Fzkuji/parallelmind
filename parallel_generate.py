@@ -260,8 +260,8 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branch_positions = metadata.branch_positions  # [branch_id * 32, ...]
         branch_start_y = metadata.branch_start_y  # 每个分支的起始time
 
-    branch_count = len(branch_inputs)
-    placeholder_flags = list(placeholders) if placeholders is not None else [False] * branch_count
+        branch_count = len(branch_inputs)
+        placeholder_flags = list(placeholders) if placeholders is not None else [False] * branch_count
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
 
         # 记录当前序列
