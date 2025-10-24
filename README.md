@@ -388,6 +388,34 @@ python eval_model.py --model_mode 1 # 默认为0：测试pretrain模型效果，
 
 </details>
 
+#### 4.1 列式并行推理脚本 `parallel_generate.py`
+
+```bash
+# 指令微调 (Chat) 模型
+python parallel_generate.py \
+  --mode sft \
+  --out_dir out \
+  --branches_per_sample 4 \
+  --chat_template \
+  --prompts "你好" "介绍一下MiniMind"
+
+# 预训练 (策划师) 模型
+python parallel_generate.py \
+  --mode pretrain \
+  --out_dir out/pretrain_dynamic \
+  --branches_per_sample 4 \
+  --prompts "规划未来城市交通||设计一个教育改革方案"
+
+# 预训练模型 + JSONL，多分支一次输入
+python parallel_generate.py \
+  --mode pretrain \
+  --branches_per_sample 4 \
+  --prompts_file planner_inputs.jsonl
+```
+
+- `--mode pretrain` 会自动启用原始文本格式（不套 chat template），默认从 `out/pretrain_dynamic/pretrain_512.pth` 加载权重，可通过 `--model_path` 指定其它 ckpt。
+- 预训练模式可以使用 `||` 将一个 prompt 拆分为多个 branch；也支持 JSONL 输入，记录格式如 `{"branches": ["branch-0","branch-1"]}` 或 `{"text": "branch-0||branch-1"}`。
+- 微调模式下继续支持 `--chat_template` 的对话输入格式，与训练时保持一致。
 
 ---
 

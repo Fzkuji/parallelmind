@@ -40,8 +40,6 @@ def load_prompts(args) -> List[Any]:
         "未来的科技趋势是什么？",
         "如何理解大语言模型？",
     ]
-    if args.mode == "pretrain":
-        return [[p] for p in default_prompts]
     return default_prompts
 
 
@@ -91,7 +89,7 @@ def apply_chat_template(tokenizer, text: str, enable_chat: bool) -> List[int]:
 
 def normalize_pretrain_branches(item: Any) -> List[str]:
     if isinstance(item, dict):
-        if "branches" in item and isinstance(item["branches"], Sequence):
+        if "branches" in item and isinstance(item["branches"], Sequence) and not isinstance(item["branches"], (str, bytes)):
             return [str(x) for x in item["branches"] if str(x).strip()]
         if "text" in item:
             text = str(item["text"])
@@ -489,6 +487,7 @@ def main():
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--max_prompt_length", type=int, default=2048)
     parser.add_argument("--chat_template", action="store_true")
+    parser.add_argument("--mode", choices=["sft", "pretrain"], default="sft", help="推理模式：sft(微调) 或 pretrain(策划师预训练)")
     parser.add_argument("--debug", action="store_true", help="启用调试输出")
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     args = parser.parse_args()
@@ -496,14 +495,47 @@ def main():
     model, tokenizer = load_model(args)
     prompts = load_prompts(args)
 
-    for start in range(0, len(prompts), args.branches_per_sample):
-        batch_prompts = prompts[start : start + args.branches_per_sample]
-        branch_inputs = [apply_chat_template(tokenizer, p, args.chat_template) for p in batch_prompts]
+    if args.mode == "pretrain":
+        prompt_groups: List[List[str]] = []
+        for item in prompts:
+            branches = normalize_pretrain_branches(item)
+            if not branches:
+                continue
+            if len(branches) <= args.branches_per_sample:
+                prompt_groups.append(branches)
+            else:
+                for start in range(0, len(branches), args.branches_per_sample):
+                    prompt_groups.append(branches[start : start + args.branches_per_sample])
+    else:
+        str_prompts = [str(p) for p in prompts]
+        prompt_groups = [
+            str_prompts[start : start + args.branches_per_sample]
+            for start in range(0, len(str_prompts), args.branches_per_sample)
+        ]
+
+    for group in prompt_groups:
+        if not group:
+            continue
+
+        if args.mode == "pretrain":
+            branch_inputs = []
+            for branch in group:
+                ids = tokenizer(branch, add_special_tokens=False).input_ids
+                branch_inputs.append(ids[: args.max_prompt_length])
+        else:
+            branch_inputs = []
+            for branch in group:
+                ids = apply_chat_template(tokenizer, branch, args.chat_template)
+                branch_inputs.append(ids[: args.max_prompt_length])
+
+        if not branch_inputs:
+            continue
+
         responses = columnar_generate(model, branch_inputs, args, tokenizer)
 
         # 如果不是streaming模式，打印结果（streaming模式已经在generate函数内打印了）
         if not args.streaming:
-            for prompt, response in zip(batch_prompts, responses):
+            for prompt, response in zip(group, responses):
                 print("\n=== Prompt ===")
                 print(prompt)
                 print("--- Response ---")
