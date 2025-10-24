@@ -40,19 +40,19 @@ def get_lr(current_step, total_steps, lr):
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
-    processed_texts = 0  # 跟踪已处理的原始文本数
-    processed_samples = 0  # 跟踪已训练的 training samples 数量
+    processed_dataset_samples = 0  # 跟踪已处理的原始文本数
 
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
     for step, batch in enumerate(train_loader):
         batch = {k: v.to(args.device) for k, v in batch.items()}
+        branch_counts = batch.pop("branch_counts")
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
 
         # 更新计数
-        processed_texts += effective_batch_size  # 消耗的原始文本数
         batch_samples = batch["input_ids"].shape[0]  # 这个 batch 实际的 training samples 数
-        processed_samples += batch_samples
+        batch_dataset_samples = int(branch_counts.sum().item())  # 这个 batch 使用的原始文本数
+        processed_dataset_samples += batch_dataset_samples
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
@@ -88,7 +88,7 @@ def train_epoch(epoch, wandb):
             # 计算实际的 batch 信息
             batch_seq_len = batch["input_ids"].shape[1]
             # 估算剩余时间（基于已处理的原始文本比例）
-            progress_ratio = processed_texts / total_samples
+            progress_ratio = processed_dataset_samples / total_samples
             if progress_ratio > 0:
                 estimated_total_time = spend_time / progress_ratio
                 remaining_time = estimated_total_time - spend_time
@@ -96,15 +96,16 @@ def train_epoch(epoch, wandb):
                 remaining_time = 0
 
             Logger(
-                'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
+                'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} batch:[{}x{}] samples:{} epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
-                    processed_texts,
+                    processed_dataset_samples,
                     total_samples,
                     loss.item() * args.accumulation_steps,
                     optimizer.param_groups[-1]['lr'],
                     batch_samples,
                     batch_seq_len,
+                    batch_dataset_samples,
                     int(remaining_time // 60)))
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
@@ -273,6 +274,8 @@ if __name__ == "__main__":
         min_branches_per_sample=args.min_branches_per_sample,
         random_time_offset=args.random_time_offset,
     )
+    if args.batch_by_samples:
+        collator.target_samples = args.batch_size
     # 使用 drop_last=False 来确保所有数据都被训练，特别是在动态 branches 模式下
     drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
     train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
