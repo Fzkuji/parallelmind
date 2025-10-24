@@ -12,19 +12,53 @@ class ParallelPretrainCollator:
         tokenizer: AutoTokenizer,
         branches_per_sample: int = 8,
         pad_to: Optional[int] = None,
+        max_branches_per_sample: Optional[int] = None,
+        min_branches_per_sample: int = 1,
+        random_time_offset: bool = True,
     ) -> None:
         self.tokenizer = tokenizer
         self.branches_per_sample = max(1, branches_per_sample)
         self.pad_to = pad_to
+        # 如果设置了 max_branches，则使用动态模式
+        self.max_branches = max_branches_per_sample if max_branches_per_sample is not None else branches_per_sample
+        self.min_branches = max(1, min_branches_per_sample)
+        self.dynamic_mode = max_branches_per_sample is not None
+        self.random_time_offset = random_time_offset
 
     def __call__(self, features: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
+        import random
+
         texts = [str(f["text"]) for f in features]
         samples = []
-        for idx in range(0, len(texts), self.branches_per_sample):
-            chunk = texts[idx : idx + self.branches_per_sample]
-            if len(chunk) < self.branches_per_sample:
-                break
-            branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+
+        if self.dynamic_mode:
+            # 动态模式：每个 sample 的 branches 数量随机
+            idx = 0
+            while idx < len(texts):
+                # 随机决定这个 sample 的 branches 数量
+                num_branches = random.randint(self.min_branches, self.max_branches)
+                # 确保不超过剩余文本数量
+                num_branches = min(num_branches, len(texts) - idx)
+
+                if num_branches >= self.min_branches:
+                    chunk = texts[idx : idx + num_branches]
+                    branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+                    samples.append({"main": "", "branches": branches})
+                    idx += num_branches
+                else:
+                    break
+        else:
+            # 固定模式：每个 sample 固定 branches 数量
+            for idx in range(0, len(texts), self.branches_per_sample):
+                chunk = texts[idx : idx + self.branches_per_sample]
+                if len(chunk) < self.branches_per_sample:
+                    break
+                branches = [{"text": txt, "answer_offset": 0} for txt in chunk]
+                samples.append({"main": "", "branches": branches})
+
+        if not samples:
+            # 如果没有足够的样本，至少创建一个
+            branches = [{"text": txt, "answer_offset": 0} for txt in texts[:min(len(texts), self.max_branches)]]
             samples.append({"main": "", "branches": branches})
 
         layout = build_flat_linear_layout(
@@ -32,6 +66,7 @@ class ParallelPretrainCollator:
             samples,
             device=torch.device("cpu"),
             pad_to=self.pad_to,
+            random_time_offset=self.random_time_offset,
         )
 
         labels = layout.input_ids.clone()

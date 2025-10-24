@@ -163,11 +163,18 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=8)
+    parser.add_argument('--max_branches_per_sample', type=int, default=None, help='Maximum branches per sample for dynamic mode (1-32). If set, enables dynamic branches.')
+    parser.add_argument('--min_branches_per_sample', type=int, default=1, help='Minimum branches per sample for dynamic mode')
+    parser.add_argument('--random_time_offset', action='store_true', default=True, help='Enable random time offset for branches during training')
+    parser.add_argument('--no_random_time_offset', action='store_false', dest='random_time_offset', help='Disable random time offset')
     parser.add_argument('--use_moe', default=False, type=bool)
     default_data_path = os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
     parser.add_argument("--max_total_tokens", type=int, default=4096)
     args = parser.parse_args()
+
+    # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
+    branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
 
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=args.use_moe)
     if not os.path.isabs(args.data_path):
@@ -177,7 +184,8 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
-    tokens_per_iter = args.batch_size * args.branches_per_sample * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
+    # 使用 max_branches（如果启用动态模式）来计算 tokens_per_iter
+    tokens_per_iter = args.batch_size * branches_multiplier * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
@@ -216,9 +224,12 @@ if __name__ == "__main__":
         tokenizer,
         branches_per_sample=args.branches_per_sample,
         pad_to=args.max_total_tokens if args.max_total_tokens > 0 else None,
+        max_branches_per_sample=args.max_branches_per_sample,
+        min_branches_per_sample=args.min_branches_per_sample,
+        random_time_offset=args.random_time_offset,
     )
     train_sampler = DistributedSampler(train_ds, drop_last=True) if ddp else None
-    effective_batch_size = args.batch_size * args.branches_per_sample
+    effective_batch_size = args.batch_size * branches_multiplier
     train_loader = DataLoader(
         train_ds,
         batch_size=effective_batch_size,
