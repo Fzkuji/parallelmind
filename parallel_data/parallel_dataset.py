@@ -9,22 +9,39 @@ from transformers import AutoTokenizer
 class ParallelPretrainDataset(Dataset):
     def __init__(self, data_path: str) -> None:
         super().__init__()
-        self.samples: List[str] = []
+        self.data_path = data_path
+        self.offsets: List[int] = []
+        self._file_handle = None
+
+        # 只构建索引，不加载数据
         with open(data_path, "r", encoding="utf-8") as handle:
+            offset = 0
             for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                data = json.loads(line)
-                text = str(data.get("text", ""))
-                if text:
-                    self.samples.append(text)
+                if line.strip():
+                    self.offsets.append(offset)
+                offset += len(line.encode('utf-8'))
+
+        print(f"数据集初始化完成: {len(self.offsets):,} 个样本")
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.offsets)
 
     def __getitem__(self, index: int) -> Dict[str, str]:
-        return {"text": self.samples[index]}
+        # 懒加载：只在需要时读取
+        # 保持文件句柄打开以提高性能
+        if self._file_handle is None:
+            self._file_handle = open(self.data_path, "r", encoding="utf-8")
+
+        self._file_handle.seek(self.offsets[index])
+        line = self._file_handle.readline()
+        data = json.loads(line.strip())
+        text = str(data.get("text", ""))
+        return {"text": text}
+
+    def __del__(self):
+        # 清理文件句柄
+        if self._file_handle is not None:
+            self._file_handle.close()
 
 
 class ParallelSFTDataset(Dataset):

@@ -310,6 +310,10 @@ print(torch.cuda.is_available())
 python train_pretrain.py
 ```
 
+```bash
+torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --batch_size 4  --epochs 2
+```
+
 > 执行预训练，得到 `pretrain_*.pth` 作为预训练的输出权重（其中*为模型的dimension，默认为512）
 
 
