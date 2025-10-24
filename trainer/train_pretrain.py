@@ -100,7 +100,7 @@ def train_epoch(epoch, wandb):
                 remaining_time = 0
 
             Logger(
-                'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] dataset_samples:{}(+{}) collator_samples:{}(+{}) epoch_Time:{}min:'.format(
+                'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
                     processed_dataset_samples,
@@ -110,10 +110,6 @@ def train_epoch(epoch, wandb):
                     optimizer.param_groups[-1]['lr'],
                     batch_samples,
                     batch_seq_len,
-                    processed_dataset_samples,
-                    processed_dataset_samples - last_logged_dataset_samples,
-                    processed_collator_samples,
-                    processed_collator_samples - last_logged_collator_samples,
                     int(remaining_time // 60)))
 
             last_logged_dataset_samples = processed_dataset_samples
