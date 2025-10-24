@@ -324,14 +324,43 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
    ```bash
    python trainer/train_pretrain.py \
      --epochs 1 \
-     --batch_size 4 \
-     --branches_per_sample 1 \
-     --branch_slice_count 8 \
-     --branch_loop_all \
-     --out_dir out/pretrain_branch_sweep
-   ```
+  --batch_size 32 \
+  --branches_per_sample 1 \
+  --branch_slice_count 8 \
+  --branch_loop_all \
+  --out_dir out/pretrain_branch_sweep \
+  --max_total_tokens 0 \
+  --data_path dataset/pretrain_hq.jsonl
+```
 
-   加了 `--branch_loop_all` 后，脚本会在一次运行中自动遍历 branch 维度 0→7；每个分片训练结束，模型参数会直接保留并继续训练下一个分片，最终输出保存在 `out/pretrain_branch_sweep/pretrain_512.pth`（若隐藏维度不同，请替换文件名中的 `512`）。
+加了 `--branch_loop_all` 后，脚本会在一次运行中自动遍历 branch 维度 0→7；每个分片训练结束，模型参数会直接保留并继续训练下一个分片，最终输出保存在 `out/pretrain_branch_sweep/pretrain_512.pth`（若隐藏维度不同，请替换文件名中的 `512`）。
+`--data_path` 指向要训练的数据文件，若要使用其他预训练语料，只需把路径换成对应的 `jsonl`。
+
+   训练完成后，可以用同一条文本依次放到不同 branch 位置，观察预训练模型的“策划师”式布局效果。以下示例使用第一阶段输出的权重 (`out/pretrain_branch_sweep/pretrain_512.pth`)，把同一句话依次放在 branch0 → branch3（其余分支直接留空即可）：
+
+```bash
+# 文本位于 branch0
+   python parallel_generate.py \
+     --mode pretrain \
+     --prompts "请介绍一下自己：" "" "" "" \
+  --branches_per_sample 4 \
+  --debug \
+  --model_path out/pretrain_branch_sweep/pretrain_512.pth \
+  --streaming
+```
+
+```
+# 文本位于 branch1
+   python parallel_generate.py \
+     --mode pretrain \
+     --prompts "" "请介绍一下自己：" "" "" \
+  --branches_per_sample 4 \
+  --debug \
+  --model_path out/pretrain_branch_sweep/pretrain_512.pth \
+  --streaming
+
+# 以此类推测试 branch2、branch3……
+```
 
 2. **阶段二：加载上一阶段权重，进行动态多分支训练（1-32 分支）**
 
@@ -339,13 +368,14 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
    python trainer/train_pretrain.py \
      --epochs 1 \
      --batch_size 4 \
-     --batch_by_samples \
-     --max_branches_per_sample 32 \
-     --min_branches_per_sample 1 \
-     --max_total_tokens 0 \
-     --init_weight out/pretrain_branch_sweep/pretrain_512.pth \
-     --out_dir out/pretrain_dynamic
-   ```
+  --batch_by_samples \
+  --max_branches_per_sample 32 \
+  --min_branches_per_sample 1 \
+  --max_total_tokens 0 \
+  --init_weight out/pretrain_branch_sweep/pretrain_512.pth \
+  --data_path dataset/pretrain_hq.jsonl \
+  --out_dir out/pretrain_dynamic
+```
 
 </details>
 

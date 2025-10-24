@@ -163,7 +163,7 @@ def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final
         sys.stdout.flush()
 
 
-def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, tokenizer) -> List[str]:
+def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, tokenizer, placeholders: Sequence[bool] | None = None) -> List[str]:
     """
     列式并行生成 - 所有分支在同一列时间同步生成
 
@@ -198,7 +198,10 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
               f"branch_start_y={layout.metadata[0].branch_start_y}")
         seq_len = layout.attention_mask.sum().item()
         print(f"Actual sequence length: {seq_len}")
-        print(f"Time range: {layout.time_ids[0, :seq_len].min().item()} ~ {layout.time_ids[0, :seq_len].max().item()}")
+        if seq_len > 0:
+            print(f"Time range: {layout.time_ids[0, :seq_len].min().item()} ~ {layout.time_ids[0, :seq_len].max().item()}")
+        else:
+            print("Time range: (empty)")
 
     set_rope_pos2d(model, layout.pos2d)
 
@@ -257,7 +260,8 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branch_positions = metadata.branch_positions  # [branch_id * 32, ...]
         branch_start_y = metadata.branch_start_y  # 每个分支的起始time
 
-        branch_count = len(branch_inputs)
+    branch_count = len(branch_inputs)
+    placeholder_flags = list(placeholders) if placeholders is not None else [False] * branch_count
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
 
         # 记录当前序列
@@ -285,13 +289,18 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             print(f"branch_pos1d_end: {metadata.branch_pos1d_end}")
             print(f"branch_current_times: {branch_current_times}")
 
-        stop_flags = [False] * branch_count
+        stop_flags = placeholder_flags[:]
         eos_id = tokenizer.eos_token_id
 
         # Streaming初始化
         if streaming:
             # 初始化显示区域
-            original_prompts = [tokenizer.decode(list(tokens), skip_special_tokens=True) for tokens in branch_inputs]
+            original_prompts = []
+            for idx, tokens in enumerate(branch_inputs):
+                if placeholder_flags[idx]:
+                    original_prompts.append("(empty branch)")
+                else:
+                    original_prompts.append(tokenizer.decode(list(tokens), skip_special_tokens=True))
             branch_texts = ["" for _ in range(branch_count)]
             print("\n" + "=" * 80)
             print("开始生成...")
@@ -317,6 +326,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 # 第一轮: 从prefill的logits采样
                 branch_logits = []
                 for branch_idx in range(branch_count):
+                    if stop_flags[branch_idx]:
+                        branch_logits.append(None)
+                        continue
                     pos1d_idx = metadata.branch_pos1d_end[branch_idx]
                     if pos1d_idx >= 0 and pos1d_idx < outputs.logits.size(1):
                         branch_logits.append(outputs.logits[0, pos1d_idx])
@@ -466,6 +478,10 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         if streaming:
             print_streaming_update(results, original_prompts, is_final=True)
 
+        for idx, is_placeholder in enumerate(placeholder_flags):
+            if is_placeholder:
+                results[idx] = ""
+
         return results
 
 
@@ -497,15 +513,31 @@ def main():
 
     if args.mode == "pretrain":
         prompt_groups: List[List[str]] = []
+        buffer: List[str] = []
         for item in prompts:
             branches = normalize_pretrain_branches(item)
             if not branches:
                 continue
-            if len(branches) <= args.branches_per_sample:
-                prompt_groups.append(branches)
+
+            is_simple_string = not isinstance(item, (dict, list, tuple)) and "||" not in str(item)
+
+            if is_simple_string and len(branches) == 1:
+                buffer.append(branches[0])
+                if len(buffer) == args.branches_per_sample:
+                    prompt_groups.append(buffer)
+                    buffer = []
             else:
-                for start in range(0, len(branches), args.branches_per_sample):
-                    prompt_groups.append(branches[start : start + args.branches_per_sample])
+                if buffer:
+                    prompt_groups.append(buffer)
+                    buffer = []
+                if len(branches) <= args.branches_per_sample:
+                    prompt_groups.append(branches)
+                else:
+                    for start in range(0, len(branches), args.branches_per_sample):
+                        prompt_groups.append(branches[start : start + args.branches_per_sample])
+
+        if buffer:
+            prompt_groups.append(buffer)
     else:
         str_prompts = [str(p) for p in prompts]
         prompt_groups = [
@@ -517,21 +549,35 @@ def main():
         if not group:
             continue
 
+        placeholder_flags: List[bool] = []
         if args.mode == "pretrain":
-            branch_inputs = []
+            branch_inputs: List[List[int]] = []
             for branch in group:
-                ids = tokenizer(branch, add_special_tokens=False).input_ids
-                branch_inputs.append(ids[: args.max_prompt_length])
+                text = str(branch)
+                if text.strip() == "":
+                    placeholder_flags.append(True)
+                    branch_inputs.append([])
+                else:
+                    placeholder_flags.append(False)
+                    ids = tokenizer(text, add_special_tokens=False).input_ids
+                    branch_inputs.append(ids[: args.max_prompt_length])
         else:
             branch_inputs = []
             for branch in group:
-                ids = apply_chat_template(tokenizer, branch, args.chat_template)
-                branch_inputs.append(ids[: args.max_prompt_length])
+                text = str(branch)
+                if text.strip() == "":
+                    placeholder_flags.append(True)
+                    ids = apply_chat_template(tokenizer, " ", args.chat_template)
+                    branch_inputs.append(ids[: args.max_prompt_length])
+                else:
+                    placeholder_flags.append(False)
+                    ids = apply_chat_template(tokenizer, text, args.chat_template)
+                    branch_inputs.append(ids[: args.max_prompt_length])
 
         if not branch_inputs:
             continue
 
-        responses = columnar_generate(model, branch_inputs, args, tokenizer)
+        responses = columnar_generate(model, branch_inputs, args, tokenizer, placeholders=placeholder_flags)
 
         # 如果不是streaming模式，打印结果（streaming模式已经在generate函数内打印了）
         if not args.streaming:
