@@ -40,11 +40,16 @@ def get_lr(current_step, total_steps, lr):
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
+    processed_samples = 0  # 跟踪已处理的样本数
+
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
     for step, batch in enumerate(train_loader):
         batch = {k: v.to(args.device) for k, v in batch.items()}
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
+
+        # 更新已处理样本数（这个 batch 消耗了 effective_batch_size 个原始文本）
+        processed_samples += effective_batch_size
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
@@ -77,15 +82,30 @@ def train_epoch(epoch, wandb):
 
         if step % args.log_interval == 0:
             spend_time = time.time() - start_time
+            # 计算实际的 batch 信息
+            batch_seq_len = batch["input_ids"].shape[1]
+            batch_samples = batch["input_ids"].shape[0]
+            actual_tokens = (batch["attention_mask"] == 1).sum().item()
+            # 估算剩余时间（基于已处理的样本比例）
+            progress_ratio = processed_samples / total_samples
+            if progress_ratio > 0:
+                estimated_total_time = spend_time / progress_ratio
+                remaining_time = estimated_total_time - spend_time
+            else:
+                remaining_time = 0
+
             Logger(
-                'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} epoch_Time:{}min:'.format(
+                'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} batch:[{}x{}] tokens:{} epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
-                    step,
-                    iter_per_epoch,
+                    processed_samples,
+                    total_samples,
                     loss.item() * args.accumulation_steps,
                     optimizer.param_groups[-1]['lr'],
-                    spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60))
+                    batch_samples,
+                    batch_seq_len,
+                    actual_tokens,
+                    int(remaining_time // 60)))
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                 wandb.log({"loss": loss.item() * args.accumulation_steps,
@@ -173,6 +193,9 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, default=default_data_path)
     parser.add_argument("--max_total_tokens", type=int, default=4096)
     args = parser.parse_args()
+
+    # 声明全局变量
+    global total_samples, effective_batch_size, iter_per_epoch
 
     # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
     branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
@@ -266,6 +289,10 @@ if __name__ == "__main__":
 
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ["float16", "bfloat16"]))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+
+    # 赋值全局变量供 train_epoch 使用
+    total_samples = len(train_ds)  # 数据集总样本数
+    iter_per_epoch = len(train_loader)
 
     if ddp:
         model._ddp_params_and_buffers_to_ignore = {"pos_cis"}
