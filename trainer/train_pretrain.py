@@ -96,11 +96,9 @@ def train_epoch(epoch, wandb):
                 remaining_time = 0
 
             Logger(
-                'Epoch:[{}/{}] samples:({}/{}) texts:({}/{}) loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
+                'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
-                    processed_samples,
-                    '?',  # 总 samples 数未知（动态 branches）
                     processed_texts,
                     total_samples,
                     loss.item() * args.accumulation_steps,
@@ -197,7 +195,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 声明全局变量
-    global total_samples, effective_batch_size, iter_per_epoch
+    global total_samples, effective_batch_size, iter_per_epoch, estimated_total_training_samples
 
     # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
     branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
@@ -293,8 +291,16 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     # 赋值全局变量供 train_epoch 使用
-    total_samples = len(train_ds)  # 数据集总样本数
+    total_samples = len(train_ds)  # 数据集总文本数（原始行数）
+    # 估算总 training samples 数
+    if args.max_branches_per_sample is not None:
+        avg_branches = (args.min_branches_per_sample + args.max_branches_per_sample) / 2
+    else:
+        avg_branches = args.branches_per_sample
+    estimated_total_training_samples = int(total_samples / avg_branches)
     iter_per_epoch = len(train_loader)
+
+    Logger(f'估算训练样本数: {estimated_total_training_samples:,} (基于平均 {avg_branches:.1f} branches/sample)')
 
     if ddp:
         model._ddp_params_and_buffers_to_ignore = {"pos_cis"}
