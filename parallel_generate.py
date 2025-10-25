@@ -112,12 +112,9 @@ def ensure_pretrain_template(text: str) -> str:
         return ""
 
     has_start = stripped.startswith("<|im_start|>")
-    has_end = stripped.endswith("<|im_end|>")
 
     if not has_start:
         stripped = "<|im_start|>" + stripped
-    if not has_end:
-        stripped = stripped + "<|im_end|>"
     return stripped
 
 

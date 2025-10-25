@@ -362,7 +362,7 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
    # 以此类推测试 branch2、branch3……
    ```
 
-   预训练模式会自动补齐 `<|im_start|>...<|im_end|>` 模板，因此直接输入纯文本即可，其余分支留空也没问题。
+   预训练模式会自动在输入前加上 `<|im_start|>`，因此直接输入纯文本即可，其余分支留空也没问题。
 
 2. **阶段二：加载上一阶段权重，进行动态多分支训练（1-32 分支）**
 
