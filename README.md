@@ -343,10 +343,10 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
    python parallel_generate.py \
      --mode pretrain \
      --prompts "请介绍一下自己：" "" "" "" \
-  --branches_per_sample 4 \
-  --debug \
-  --model_path out/pretrain_branch_sweep/pretrain_512.pth \
-  --streaming
+     --branches_per_sample 4 \
+     --debug \
+     --model_path out/pretrain_branch_sweep/pretrain_512.pth \
+     --streaming
 ```
 
 ```
@@ -359,15 +359,17 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
   --model_path out/pretrain_branch_sweep/pretrain_512.pth \
   --streaming
 
-# 以此类推测试 branch2、branch3……
-```
+   # 以此类推测试 branch2、branch3……
+   ```
+
+   预训练模式会自动补齐 `<|im_start|>...<|im_end|>` 模板，因此直接输入纯文本即可，其余分支留空也没问题。
 
 2. **阶段二：加载上一阶段权重，进行动态多分支训练（1-32 分支）**
 
-   ```bash
-   python trainer/train_pretrain.py \
-     --epochs 1 \
-     --batch_size 4 \
+```bash
+python trainer/train_pretrain.py \
+  --epochs 1 \
+  --batch_size 4 \
   --batch_by_samples \
   --max_branches_per_sample 32 \
   --min_branches_per_sample 1 \

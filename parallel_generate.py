@@ -106,6 +106,21 @@ def normalize_pretrain_branches(item: Any) -> List[str]:
     return [text]
 
 
+def ensure_pretrain_template(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+
+    has_start = stripped.startswith("<|im_start|>")
+    has_end = stripped.endswith("<|im_end|>")
+
+    if not has_start:
+        stripped = "<|im_start|>" + stripped
+    if not has_end:
+        stripped = stripped + "<|im_end|>"
+    return stripped
+
+
 def sample_token(logits: torch.Tensor, args) -> torch.Tensor:
     if args.do_sample:
         logits = logits / max(args.temperature, 1e-5)
@@ -559,7 +574,8 @@ def main():
                     branch_inputs.append([])
                 else:
                     placeholder_flags.append(False)
-                    ids = tokenizer(text, add_special_tokens=False).input_ids
+                    norm_text = ensure_pretrain_template(text)
+                    ids = tokenizer(norm_text, add_special_tokens=False).input_ids
                     branch_inputs.append(ids[: args.max_prompt_length])
         else:
             branch_inputs = []
