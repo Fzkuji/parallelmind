@@ -375,7 +375,7 @@ python trainer/train_pretrain.py \
   --min_branches_per_sample 1 \
   --max_total_tokens 0 \
   --init_weight out/pretrain_branch_sweep/pretrain_512.pth \
-  --data_path dataset/pretrain_hq.jsonl \
+  --data_path dataset/pretrain_hq_split.jsonl \
   --out_dir out/pretrain_dynamic
 ```
 
@@ -473,7 +473,7 @@ deepspeed --master_port 29500 --num_gpus=N train_xxx.py
 
 ```bash
 # 需要登录: wandb login
-torchrun --nproc_per_node N train_xxx.py --use_wandb
+torchrun --nproc_per_node 8 train_xxx.py --use_wandb
 # and
 python train_xxx.py --use_wandb
 ```

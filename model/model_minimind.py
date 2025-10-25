@@ -434,7 +434,7 @@ class MiniMindModel(nn.Module):
 
         rope_dim = config.hidden_size // config.num_attention_heads
         self.rotary_emb = SimpleRotaryEmbedding(rope_dim, config.rope_theta)
-        pair_indices = self._auto_pair_indices(0.25)
+        pair_indices = self._auto_pair_indices(0.5)
         patch_model_with_interleaved_2d_rope(self, pair_indices)
 
     def _auto_pair_indices(self, ratio: float) -> Tuple[int, ...]:
