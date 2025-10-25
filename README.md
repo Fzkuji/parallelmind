@@ -321,9 +321,9 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
 
 1. **逐个 branch 维度循环训练（可选但推荐预热）**
 
-   ```bash
-   python trainer/train_pretrain.py \
-     --epochs 1 \
+```bash
+python trainer/train_pretrain.py \
+  --epochs 1 \
   --batch_size 32 \
   --branches_per_sample 1 \
   --branch_slice_count 8 \
