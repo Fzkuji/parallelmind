@@ -476,6 +476,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 print(f"Branch {idx} generated {len(generated)} tokens: {generated[:10]}{'...' if len(generated) > 10 else ''}")
 
         results: List[str] = []
+        branch_token_meta: List[List[Tuple[int, int]]] = []
         for idx, generated in enumerate(branch_generated):
             if eos_id is not None and eos_id in generated:
                 eos_index = generated.index(eos_id)
@@ -487,9 +488,28 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             text = tokenizer.decode(generated_slice, skip_special_tokens=True)
             results.append(text.strip())
 
+            # 提取位置元信息
+            valid_len = len(generated_slice)
+            meta_pairs: List[Tuple[int, int]] = []
+            if valid_len > 0:
+                token_positions = layout.pos2d[0, :valid_len]
+                for pair in token_positions:
+                    meta_pairs.append((int(pair[0]), int(pair[1])))
+            branch_token_meta.append(meta_pairs)
+
         # Streaming最终显示
         if streaming:
             print_streaming_update(results, original_prompts, is_final=True)
+
+        if debug:
+            for idx, meta in enumerate(branch_token_meta):
+                if not meta:
+                    print(f"Branch {idx} token positions: []")
+                    continue
+                snippet = " ".join(f"({b},{t})" for b, t in meta[:32])
+                if len(meta) > 32:
+                    snippet += " ..."
+                print(f"Branch {idx} token positions ({len(meta)} tokens): {snippet}")
 
         for idx, is_placeholder in enumerate(placeholder_flags):
             if is_placeholder:
