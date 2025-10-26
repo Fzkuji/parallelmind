@@ -379,6 +379,8 @@ python trainer/train_pretrain.py \
   --out_dir out/pretrain_dynamic
 ```
 
+Stage 2 默认使用列式交错 mask（与推理端一致），无需再额外设置。
+
 </details>
 
 > 执行预训练，得到 `pretrain_*.pth` 作为预训练的输出权重（其中*为模型的dimension，默认为512）

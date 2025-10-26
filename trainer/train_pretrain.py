@@ -299,6 +299,7 @@ if __name__ == "__main__":
         max_branches_per_sample=args.max_branches_per_sample,
         min_branches_per_sample=args.min_branches_per_sample,
         random_time_offset=args.random_time_offset,
+        interleave_branches=True,
     )
     if args.batch_by_samples:
         collator.target_samples = args.batch_size

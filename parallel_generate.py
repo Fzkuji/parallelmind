@@ -198,6 +198,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         device=device,
         pad_to=None,
         align_to="left",  # 与训练保持一致，使用左对齐
+        interleave_branches=(args.mode == "pretrain"),
     )
 
     if debug:

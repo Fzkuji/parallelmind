@@ -139,6 +139,7 @@ def build_flat_linear_layout(
     branch_stride: int = DEFAULT_BRANCH_POSITION_STRIDE,
     align_to: Literal["left", "right"] = "left",
     random_time_offset: bool = False,
+    interleave_branches: bool = False,
 ) -> BatchLayout:
     if align_to not in {"left", "right"}:
         raise ValueError(f"Unsupported align_to value: {align_to}")
@@ -242,45 +243,71 @@ def build_flat_linear_layout(
         else:
             branch_offsets = [0] * len(branch_sequences)
 
-        for idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
-            seq_len = tokens.numel()
-            if seq_len == 0:
-                start_col = 0 if idx == 0 else (main_len if main_len > 0 else 0)
-                branch_start_y.append(start_col)
-                answer_token_starts.append(0)
-                continue
+        if interleave_branches and main_len == 0 and len(branch_sequences) > 0:
+            pointers = [0 for _ in branch_sequences]
+            start_positions = [-1 for _ in branch_sequences]
+            column_time = 0
 
-            if idx == 0 and main_len > 0:
-                times = torch.arange(seq_len, device=device)
-            else:
-                if align_to == "right" and non_main_count > 0:
-                    base_offset = main_len if main_len > 0 else 0
-                    shift = max(max_branch_len - seq_len, 0)
-                    start_col = base_offset + shift
-                else:
-                    if non_main_count > 0:
-                        if main_len > 0:
-                            start_col = main_len
-                        else:
-                            start_col = 0
-                    else:
-                        start_col = 0 if main_len == 0 else main_len
-                times = torch.arange(seq_len, device=device) + start_col
+            while True:
+                progressed = False
+                for local_idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
+                    seq_len = tokens.numel()
+                    if pointers[local_idx] >= seq_len:
+                        continue
+                    order = pointers[local_idx]
+                    if start_positions[local_idx] < 0:
+                        start_positions[local_idx] = column_time
+                    entries.append((column_time, branch_id, order, int(tokens[order].item())))
+                    pointers[local_idx] += 1
+                    progressed = True
+                if not progressed:
+                    break
+                column_time += 1
 
-            # 应用branch offset
-            times = times + branch_offsets[idx]
-            branch_start_y.append(int(times[0].item()))
-
-            if idx == 0 and main_len > 0:
-                answer_token_starts.append(seq_len)
-            else:
-                offset_list_idx = idx - (1 if main_len > 0 else 0)
-                raw_offset = answer_offsets[offset_list_idx] if 0 <= offset_list_idx < len(answer_offsets) else 0
+            branch_start_y = [max(0, pos) for pos in start_positions]
+            for idx, tokens in enumerate(branch_sequences):
+                raw_offset = answer_offsets[idx] if idx < len(answer_offsets) else 0
+                seq_len = tokens.numel()
                 answer_token_starts.append(max(0, min(seq_len, raw_offset)))
+        else:
+            for idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
+                seq_len = tokens.numel()
+                if seq_len == 0:
+                    start_col = 0 if idx == 0 else (main_len if main_len > 0 else 0)
+                    branch_start_y.append(start_col)
+                    answer_token_starts.append(0)
+                    continue
 
-            for order, token in enumerate(tokens):
-                time_value = int(times[order].item())
-                entries.append((time_value, branch_id, order, int(token.item())))
+                if idx == 0 and main_len > 0:
+                    times = torch.arange(seq_len, device=device)
+                else:
+                    if align_to == "right" and non_main_count > 0:
+                        base_offset = main_len if main_len > 0 else 0
+                        shift = max(max_branch_len - seq_len, 0)
+                        start_col = base_offset + shift
+                    else:
+                        if non_main_count > 0:
+                            if main_len > 0:
+                                start_col = main_len
+                            else:
+                                start_col = 0
+                        else:
+                            start_col = 0 if main_len == 0 else main_len
+                    times = torch.arange(seq_len, device=device) + start_col
+
+                times = times + branch_offsets[idx]
+                branch_start_y.append(int(times[0].item()))
+
+                if idx == 0 and main_len > 0:
+                    answer_token_starts.append(seq_len)
+                else:
+                    offset_list_idx = idx - (1 if main_len > 0 else 0)
+                    raw_offset = answer_offsets[offset_list_idx] if 0 <= offset_list_idx < len(answer_offsets) else 0
+                    answer_token_starts.append(max(0, min(seq_len, raw_offset)))
+
+                for order, token in enumerate(tokens):
+                    time_value = int(times[order].item())
+                    entries.append((time_value, branch_id, order, int(token.item())))
 
         entries.sort()
         token_count = len(entries)
