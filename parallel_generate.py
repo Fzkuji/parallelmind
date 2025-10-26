@@ -276,6 +276,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branch_count = len(branch_inputs)
         placeholder_flags = list(placeholders) if placeholders is not None else [False] * branch_count
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
+        branch_generated_meta: List[List[Tuple[int, int]]] = [[] for _ in range(branch_count)]
 
         # 记录当前序列
         seq_len = int(attn_mask.sum().item())
@@ -391,6 +392,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
                 # 记录生成的token
                 branch_generated[branch_idx].append(token_id)
+                branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_current_times[branch_idx]))
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
 
@@ -481,6 +483,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             if eos_id is not None and eos_id in generated:
                 eos_index = generated.index(eos_id)
                 generated_slice = generated[:eos_index]
+                branch_generated_meta[idx] = branch_generated_meta[idx][:eos_index]
                 if debug:
                     print(f"Branch {idx}: Found EOS at position {eos_index}, slicing to {len(generated_slice)} tokens")
             else:
@@ -490,12 +493,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
             # 提取位置元信息
             valid_len = len(generated_slice)
-            meta_pairs: List[Tuple[int, int]] = []
-            if valid_len > 0:
-                token_positions = layout.pos2d[0, :valid_len]
-                for pair in token_positions:
-                    meta_pairs.append((int(pair[0]), int(pair[1])))
-            branch_token_meta.append(meta_pairs)
+            branch_token_meta.append(branch_generated_meta[idx][:valid_len])
 
         # Streaming最终显示
         if streaming:
