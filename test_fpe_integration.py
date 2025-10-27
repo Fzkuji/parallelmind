@@ -61,15 +61,14 @@ def test_fpe_mode():
         vocab_size=1000,
         pe_type='fpe',
         fpe_theta=10000.0,
-        branch_stride=128,
         fpe_learnable=False,
-        fpe_max_branches=512
+        fpe_max_positions=32768
     )
 
     model = MiniMindForCausalLM(config)
     print(f"✓ Fourier PE 模型创建成功")
     print(f"  - fourier_pe: {model.model.fourier_pe}")
-    print(f"  - branch_stride: {config.branch_stride}")
+    print(f"  - fpe_max_positions: {config.fpe_max_positions}")
 
     # 测试forward
     batch_size = 2
@@ -101,7 +100,7 @@ def test_branch_discrimination():
         num_hidden_layers=2,
         vocab_size=1000,
         pe_type='fpe',
-        branch_stride=128
+        fpe_max_positions=32768
     )
 
     model = MiniMindForCausalLM(config)
@@ -194,7 +193,11 @@ if __name__ == "__main__":
 
 参数说明：
 - --pe fpe: 使用Fourier PE（默认rope）
-- --branch_stride 128: branch间隔（默认128）
 - --fpe_theta 10000.0: FPE基础频率（默认10000）
+- --fpe_max_positions 32768: FPE最大位置数（默认32768）
 - --fpe_learnable: 使FPE可学习（默认固定）
+
+说明：
+- FPE直接使用branch_id作为查表索引，不需要stride概念
+- 确保fpe_max_positions足够大以容纳所有可能的branch_id
 """)

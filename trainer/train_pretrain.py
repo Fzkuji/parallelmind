@@ -211,7 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--pe", type=str, default='rope', choices=['rope', 'fpe'],
                         help="Position encoding type: 'rope' (RoPE 2D) or 'fpe' (Fourier PE + 1D RoPE)")
     parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
-    parser.add_argument("--branch_stride", type=int, default=128, help="Branch之间的位置stride（用于FPE，默认128）")
+    parser.add_argument("--fpe_max_positions", type=int, default=32768, help="Fourier PE最大位置数（默认32768）")
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
     args = parser.parse_args()
 
@@ -254,8 +254,8 @@ if __name__ == "__main__":
         use_moe=args.use_moe,
         pe_type=args.pe,
         fpe_theta=args.fpe_theta,
+        fpe_max_positions=args.fpe_max_positions,
         fpe_learnable=args.fpe_learnable,
-        branch_stride=args.branch_stride,
     )
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)

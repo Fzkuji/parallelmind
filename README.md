@@ -480,6 +480,7 @@ torchrun --nproc_per_node 8 train_xxx.py --use_wandb
 python train_xxx.py --use_wandb
 ```
 
+
 通过添加`--use_wandb`参数，可以记录训练过程，训练完成后，可以在wandb网站上查看训练过程。通过修改`wandb_project`
 和`wandb_run_name`参数，可以指定项目名称和运行名称。
 

@@ -30,9 +30,8 @@ class MiniMindConfig(PretrainedConfig):
             ####################################################
             pe_type: str = 'rope',  # 'rope' (RoPE 2D) or 'fpe' (Fourier PE)
             fpe_theta: float = 10000.0,  # Fourier PE的基础频率
-            fpe_max_branches: int = 512,  # Fourier PE支持的最大branch数
+            fpe_max_positions: int = 32768,  # Fourier PE支持的最大位置（确保能容纳所有branch_id）
             fpe_learnable: bool = False,  # Fourier PE是否可学习
-            branch_stride: int = 128,  # Branch之间的位置stride（用于FPE）
             ####################################################
             # Here are the specific configurations of MOE
             # When use_moe is false, the following is invalid
@@ -76,9 +75,8 @@ class MiniMindConfig(PretrainedConfig):
         ####################################################
         self.pe_type = pe_type
         self.fpe_theta = fpe_theta
-        self.fpe_max_branches = fpe_max_branches
+        self.fpe_max_positions = fpe_max_positions
         self.fpe_learnable = fpe_learnable
-        self.branch_stride = branch_stride
         ####################################################
         # Here are the specific configurations of MOE
         # When use_moe is false, the following is invalid
@@ -463,13 +461,13 @@ class MiniMindModel(nn.Module):
             # 新方式：Fourier PE (branch) + 1D RoPE (time only)
             self.fourier_pe = FourierPositionEncoding(
                 d_model=config.hidden_size,
-                max_positions=config.fpe_max_branches,
+                max_positions=config.fpe_max_positions,
                 theta=config.fpe_theta,
                 learnable=config.fpe_learnable,
                 dropout=config.dropout
             )
             print(f"✓ 使用 Fourier PE (branch) + 1D RoPE (time) 位置编码")
-            print(f"  - Branch stride: {config.branch_stride}")
+            print(f"  - FPE max_positions: {config.fpe_max_positions}")
             print(f"  - FPE theta: {config.fpe_theta}")
             print(f"  - FPE learnable: {config.fpe_learnable}")
         else:
@@ -516,15 +514,14 @@ class MiniMindModel(nn.Module):
             branch_ids = pos2d[:, :, 0]  # [batch, seq]
             time_ids = pos2d[:, :, 1]    # [batch, seq]
 
-            # 2. Branch通过stride映射到FPE的位置空间
-            # 例如：branch_id=0 -> pos=0, branch_id=1 -> pos=128 (if stride=128)
-            branch_positions = (branch_ids / self.config.branch_stride).long()
-
-            # 3. 添加Fourier PE (branch编码)
-            branch_pe = self.fourier_pe(branch_positions)  # [batch, seq, hidden]
+            # 2. 添加Fourier PE (branch编码)
+            # 注意：branch_ids可能是 [0, 4096, 8192, ...] (from RoPE-style layout)
+            # 或者是 [0, 1, 2, ...] (直接的branch索引)
+            # FPE直接使用branch_ids作为查表索引，确保max_positions足够大即可
+            branch_pe = self.fourier_pe(branch_ids.long())  # [batch, seq, hidden]
             hidden_states = hidden_states + branch_pe
 
-            # 4. 使用1D RoPE (只基于time)
+            # 3. 使用1D RoPE (只基于time)
             cos, sin = self.rotary_emb(hidden_states, time_ids)
             position_embeddings = (cos, sin)
 
