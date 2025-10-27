@@ -237,7 +237,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         else:
             print("Time range: (empty)")
 
-    set_rope_pos2d(model, layout.pos2d)
+    # 只有RoPE 2D模式需要set_rope_pos2d，FPE模式不需要
+    if not hasattr(model.model, 'fourier_pe') or model.model.fourier_pe is None:
+        set_rope_pos2d(model, layout.pos2d)
 
     input_ids = layout.input_ids
     attn_mask = layout.attention_mask
@@ -475,7 +477,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                         incremental_mask[0, 0, i, j] = 0.0
 
             # Forward
-            set_rope_pos2d(model, batch_pos2d)
+            # 只有RoPE 2D模式需要set_rope_pos2d，FPE模式不需要
+            if not hasattr(model.model, 'fourier_pe') or model.model.fourier_pe is None:
+                set_rope_pos2d(model, batch_pos2d)
             outputs = model(
                 input_ids=batch_input_ids,
                 attention_mask=incremental_mask,
