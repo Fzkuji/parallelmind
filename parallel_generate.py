@@ -71,12 +71,19 @@ def load_model(args):
         pe_type = 'fpe' if has_fpe else 'rope'
         print(f"✓ 自动检测到位置编码类型: {pe_type}")
 
+    # 自动检测fpe_max_positions（从checkpoint中的pe参数形状推断）
+    fpe_max_positions = 512  # 默认值
+    if pe_type == 'fpe' and 'model.fourier_pe.pe' in state_dict:
+        fpe_max_positions = state_dict['model.fourier_pe.pe'].shape[0]
+        print(f"✓ 自动检测到 fpe_max_positions: {fpe_max_positions}")
+
     config = MiniMindConfig(
         hidden_size=args.hidden_size,
         num_hidden_layers=args.num_hidden_layers,
         use_moe=args.use_moe,
         inference_rope_scaling=args.inference_rope_scaling,
         pe_type=pe_type,
+        fpe_max_positions=fpe_max_positions,
     )
 
     model = MiniMindForCausalLM(config)
