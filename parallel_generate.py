@@ -48,13 +48,6 @@ def load_model(args):
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    config = MiniMindConfig(
-        hidden_size=args.hidden_size,
-        num_hidden_layers=args.num_hidden_layers,
-        use_moe=args.use_moe,
-        inference_rope_scaling=args.inference_rope_scaling,
-    )
-
     if args.model_path:
         ckpt_path = Path(args.model_path)
     else:
@@ -64,7 +57,28 @@ def load_model(args):
     if not ckpt_path.exists():
         raise FileNotFoundError(f"未找到模型权重: {ckpt_path}")
 
+    # 加载checkpoint并自动检测pe_type
     state_dict = torch.load(ckpt_path, map_location=args.device)
+
+    # 检测checkpoint中是否包含FPE相关的keys
+    has_fpe = any(k.startswith("model.fourier_pe.") for k in state_dict.keys())
+
+    # 如果用户指定了--pe参数，使用用户指定的；否则自动检测
+    if hasattr(args, 'pe') and args.pe:
+        pe_type = args.pe
+        print(f"✓ 使用用户指定的位置编码: {pe_type}")
+    else:
+        pe_type = 'fpe' if has_fpe else 'rope'
+        print(f"✓ 自动检测到位置编码类型: {pe_type}")
+
+    config = MiniMindConfig(
+        hidden_size=args.hidden_size,
+        num_hidden_layers=args.num_hidden_layers,
+        use_moe=args.use_moe,
+        inference_rope_scaling=args.inference_rope_scaling,
+        pe_type=pe_type,
+    )
+
     model = MiniMindForCausalLM(config)
     model.load_state_dict(state_dict, strict=True)
     return model.to(args.device).eval(), tokenizer
@@ -537,6 +551,7 @@ def main():
     parser.add_argument("--mode", choices=["sft", "pretrain"], default="sft", help="推理模式：sft(微调) 或 pretrain(策划师预训练)")
     parser.add_argument("--debug", action="store_true", help="启用调试输出")
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
+    parser.add_argument("--pe", type=str, choices=['rope', 'fpe'], default=None, help="位置编码类型（不指定则自动检测）")
     args = parser.parse_args()
 
     model, tokenizer = load_model(args)
