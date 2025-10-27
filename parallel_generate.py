@@ -168,31 +168,35 @@ def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final
         prompts: 每个branch的原始prompt
         is_final: 是否是最终结果
     """
-    # 清空之前的输出（移动到输出区域的起始位置）
-    num_branches = len(branch_texts)
-    if not is_final:
-        # 向上移动光标到输出区域开始
-        sys.stdout.write(f"\033[{num_branches + 1}A")  # 上移 n+1 行
-        sys.stdout.write("\r")  # 回到行首
-
-    # 打印每个branch的当前状态
-    for idx, (prompt, text) in enumerate(zip(prompts, branch_texts)):
-        if is_final:
-            # 最终结果，完整打印
-            print(f"\n=== Branch {idx} ===")
-            print(f"Prompt: {prompt}")
+    if is_final:
+        # 换行后打印最终结果
+        print("\n" + "=" * 80)
+        print("生成完成")
+        print("=" * 80)
+        for idx, (prompt, text) in enumerate(zip(prompts, branch_texts)):
+            print(f"\n【Branch {idx}】")
+            # 截断过长的prompt
+            prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt
+            print(f"Prompt: {prompt_display}")
             print(f"Response: {text}")
-        else:
-            # 流式更新，单行显示
-            # 截断过长的文本用于显示
-            max_display_len = 80
-            display_text = text if len(text) <= max_display_len else text[:max_display_len] + "..."
-            sys.stdout.write(f"\033[K")  # 清除当前行
-            sys.stdout.write(f"Branch {idx}: {display_text}\n")
+    else:
+        # 流式更新：单行进度显示
+        # 格式: B0:25字[预览文本] | B1:30字[预览文本] | ...
+        status_parts = []
+        for idx, text in enumerate(branch_texts):
+            char_count = len(text)
+            # 显示最后15个字符作为预览
+            preview = text[-15:] if len(text) > 15 else text
+            preview = preview.replace('\n', ' ').replace('\r', ' ')  # 去掉换行符
+            status_parts.append(f"B{idx}:{char_count}字[{preview}]")
 
-    if not is_final:
-        sys.stdout.write("\033[K")  # 清除分隔行
-        sys.stdout.write("---\n")
+        status_line = " | ".join(status_parts)
+        # 使用\r回到行首，覆盖上一次的输出
+        # 限制总长度避免换行
+        max_width = 120
+        if len(status_line) > max_width:
+            status_line = status_line[:max_width-3] + "..."
+        sys.stdout.write(f"\r{status_line}")
         sys.stdout.flush()
 
 
@@ -340,12 +344,11 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                     original_prompts.append(tokenizer.decode(list(tokens), skip_special_tokens=True))
             branch_texts = ["" for _ in range(branch_count)]
             print("\n" + "=" * 80)
-            print("开始生成...")
+            print(f"开始生成 ({branch_count} branches)...")
             print("=" * 80)
-            # 预留显示空间
-            for i in range(branch_count):
-                print(f"Branch {i}: ")
-            print("---")
+            # 单行进度显示，不需要预留多行空间
+            sys.stdout.write("初始化中...")
+            sys.stdout.flush()
 
         # 增量生成循环 - 列同步
         for step_idx in range(args.max_new_tokens):
