@@ -211,7 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--pe", type=str, default='rope', choices=['rope', 'fpe'],
                         help="Position encoding type: 'rope' (RoPE 2D) or 'fpe' (Fourier PE + 1D RoPE)")
     parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
-    parser.add_argument("--fpe_max_positions", type=int, default=32768, help="Fourier PE最大位置数（默认32768）")
+    parser.add_argument("--fpe_max_positions", type=int, default=512, help="Fourier PE最大位置数（branch数量一般很小，默认512）")
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
     args = parser.parse_args()
 
@@ -306,6 +306,12 @@ if __name__ == "__main__":
         wandb = None
 
     model, tokenizer = init_model(lm_config)
+
+    # 根据pe_type设置branch_stride
+    # rope: 使用stride=128来拉大不同branch的位置距离
+    # fpe: 直接用branch索引0,1,2,3...，stride=1
+    branch_stride = 1 if args.pe == 'fpe' else 128
+
     collator = ParallelPretrainCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
@@ -314,6 +320,7 @@ if __name__ == "__main__":
         min_branches_per_sample=args.min_branches_per_sample,
         random_time_offset=args.random_time_offset,
         interleave_branches=True,
+        branch_stride=branch_stride,
     )
     if args.batch_by_samples:
         collator.target_samples = args.batch_size

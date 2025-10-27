@@ -17,6 +17,7 @@ class ParallelPretrainCollator:
         min_branches_per_sample: int = 1,
         random_time_offset: bool = True,
         interleave_branches: bool = False,
+        branch_stride: int = 128,
     ) -> None:
         self.tokenizer = tokenizer
         self.branches_per_sample = max(1, branches_per_sample)
@@ -29,6 +30,7 @@ class ParallelPretrainCollator:
         self.target_samples: Optional[int] = None  # 由训练脚本在 batch_by_samples 模式下设置
         self._buffer: Deque[str] = deque()
         self.interleave_branches = interleave_branches
+        self.branch_stride = branch_stride
 
     def __call__(self, features: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
         import random
@@ -123,6 +125,7 @@ class ParallelPretrainCollator:
             samples,
             device=torch.device("cpu"),
             pad_to=self.pad_to,
+            branch_stride=self.branch_stride,
             random_time_offset=self.random_time_offset,
             interleave_branches=self.interleave_branches,
         )
@@ -180,6 +183,7 @@ class ParallelSFTCollator:
             samples,
             device=torch.device("cpu"),
             pad_to=self.pad_to,
+            branch_stride=self.branch_stride,
             random_time_offset=self.random_time_offset,
         )
 

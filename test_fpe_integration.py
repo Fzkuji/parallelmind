@@ -62,7 +62,7 @@ def test_fpe_mode():
         pe_type='fpe',
         fpe_theta=10000.0,
         fpe_learnable=False,
-        fpe_max_positions=32768
+        fpe_max_positions=512
     )
 
     model = MiniMindForCausalLM(config)
@@ -100,7 +100,7 @@ def test_branch_discrimination():
         num_hidden_layers=2,
         vocab_size=1000,
         pe_type='fpe',
-        fpe_max_positions=32768
+        fpe_max_positions=512
     )
 
     model = MiniMindForCausalLM(config)
@@ -194,10 +194,12 @@ if __name__ == "__main__":
 参数说明：
 - --pe fpe: 使用Fourier PE（默认rope）
 - --fpe_theta 10000.0: FPE基础频率（默认10000）
-- --fpe_max_positions 32768: FPE最大位置数（默认32768）
+- --fpe_max_positions 512: FPE最大位置数（默认512，足够容纳常见的branch数量）
 - --fpe_learnable: 使FPE可学习（默认固定）
 
 说明：
-- FPE直接使用branch_id作为查表索引，不需要stride概念
-- 确保fpe_max_positions足够大以容纳所有可能的branch_id
+- RoPE 2D模式：branch使用stride=128，pos为[0, 128, 256, ...]
+- FPE模式：branch使用stride=1，pos为[0, 1, 2, 3, ...]（直接的branch索引）
+- FPE直接查表，每个branch_id对应一个独立的向量
+- fpe_max_positions=512足够容纳常见场景（branch数量通常<100）
 """)

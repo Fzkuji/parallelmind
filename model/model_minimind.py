@@ -30,7 +30,7 @@ class MiniMindConfig(PretrainedConfig):
             ####################################################
             pe_type: str = 'rope',  # 'rope' (RoPE 2D) or 'fpe' (Fourier PE)
             fpe_theta: float = 10000.0,  # Fourier PE的基础频率
-            fpe_max_positions: int = 32768,  # Fourier PE支持的最大位置（确保能容纳所有branch_id）
+            fpe_max_positions: int = 512,  # Fourier PE支持的最大位置（branch数量一般很小，512足够）
             fpe_learnable: bool = False,  # Fourier PE是否可学习
             ####################################################
             # Here are the specific configurations of MOE
