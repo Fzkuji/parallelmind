@@ -207,6 +207,12 @@ if __name__ == "__main__":
     parser.add_argument("--branch_slice_count", type=int, default=None, help="Divide dataset into N slices (e.g., branch dimension count)")
     parser.add_argument("--branch_slice_index", type=int, default=0, help="Select which slice to train on (0-based)")
     parser.add_argument("--branch_loop_all", action="store_true", help="Iterate through all branch slices sequentially in one run")
+    # Position Encoding参数
+    parser.add_argument("--pe", type=str, default='rope', choices=['rope', 'fpe'],
+                        help="Position encoding type: 'rope' (RoPE 2D) or 'fpe' (Fourier PE + 1D RoPE)")
+    parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
+    parser.add_argument("--branch_stride", type=int, default=128, help="Branch之间的位置stride（用于FPE，默认128）")
+    parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
     args = parser.parse_args()
 
     # 声明全局变量
@@ -242,7 +248,15 @@ if __name__ == "__main__":
     else:
         effective_batch_size = args.batch_size * branches_multiplier
 
-    lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=args.use_moe)
+    lm_config = MiniMindConfig(
+        hidden_size=args.hidden_size,
+        num_hidden_layers=args.num_hidden_layers,
+        use_moe=args.use_moe,
+        pe_type=args.pe,
+        fpe_theta=args.fpe_theta,
+        fpe_learnable=args.fpe_learnable,
+        branch_stride=args.branch_stride,
+    )
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)
     if not os.path.isabs(args.out_dir):

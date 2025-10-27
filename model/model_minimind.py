@@ -26,6 +26,14 @@ class MiniMindConfig(PretrainedConfig):
             inference_rope_scaling: bool = False,
             flash_attn: bool = True,
             ####################################################
+            # Position encoding type for branch discrimination
+            ####################################################
+            pe_type: str = 'rope',  # 'rope' (RoPE 2D) or 'fpe' (Fourier PE)
+            fpe_theta: float = 10000.0,  # Fourier PE的基础频率
+            fpe_max_branches: int = 512,  # Fourier PE支持的最大branch数
+            fpe_learnable: bool = False,  # Fourier PE是否可学习
+            branch_stride: int = 128,  # Branch之间的位置stride（用于FPE）
+            ####################################################
             # Here are the specific configurations of MOE
             # When use_moe is false, the following is invalid
             ####################################################
@@ -64,6 +72,14 @@ class MiniMindConfig(PretrainedConfig):
         } if self.inference_rope_scaling else None
         self.flash_attn = flash_attn
         ####################################################
+        # Position encoding type for branch discrimination
+        ####################################################
+        self.pe_type = pe_type
+        self.fpe_theta = fpe_theta
+        self.fpe_max_branches = fpe_max_branches
+        self.fpe_learnable = fpe_learnable
+        self.branch_stride = branch_stride
+        ####################################################
         # Here are the specific configurations of MOE
         # When use_moe is false, the following is invalid
         ####################################################
@@ -95,6 +111,7 @@ from parallel.columnar import (
     set_rope_pos2d,
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from model.fourier_pe import FourierPositionEncoding
 
 
 class RMSNorm(torch.nn.Module):
@@ -434,8 +451,29 @@ class MiniMindModel(nn.Module):
 
         rope_dim = config.hidden_size // config.num_attention_heads
         self.rotary_emb = SimpleRotaryEmbedding(rope_dim, config.rope_theta)
-        pair_indices = self._auto_pair_indices(0.5)
-        patch_model_with_interleaved_2d_rope(self, pair_indices)
+
+        # 根据pe_type选择位置编码方式
+        if config.pe_type == 'rope':
+            # 原有方式：RoPE 2D（branch + time都在RoPE中编码）
+            pair_indices = self._auto_pair_indices(0.5)
+            patch_model_with_interleaved_2d_rope(self, pair_indices)
+            self.fourier_pe = None
+            print(f"✓ 使用 RoPE 2D 位置编码 (branch + time in RoPE)")
+        elif config.pe_type == 'fpe':
+            # 新方式：Fourier PE (branch) + 1D RoPE (time only)
+            self.fourier_pe = FourierPositionEncoding(
+                d_model=config.hidden_size,
+                max_positions=config.fpe_max_branches,
+                theta=config.fpe_theta,
+                learnable=config.fpe_learnable,
+                dropout=config.dropout
+            )
+            print(f"✓ 使用 Fourier PE (branch) + 1D RoPE (time) 位置编码")
+            print(f"  - Branch stride: {config.branch_stride}")
+            print(f"  - FPE theta: {config.fpe_theta}")
+            print(f"  - FPE learnable: {config.fpe_learnable}")
+        else:
+            raise ValueError(f"未知的pe_type: {config.pe_type}，请使用 'rope' 或 'fpe'")
 
     def _auto_pair_indices(self, ratio: float) -> Tuple[int, ...]:
         freq_count = int(self.rotary_emb.inv_freq.numel())
@@ -465,9 +503,30 @@ class MiniMindModel(nn.Module):
         if pos2d is None:
             branch_zeros = torch.zeros_like(position_ids)
             pos2d = torch.stack([branch_zeros, position_ids], dim=-1)
-        set_rope_pos2d(self, pos2d)
-        cos, sin = self.rotary_emb(hidden_states, position_ids)
-        position_embeddings = (cos, sin)
+
+        # 根据pe_type选择位置编码方式
+        if self.config.pe_type == 'rope':
+            # 原有方式：RoPE 2D
+            set_rope_pos2d(self, pos2d)
+            cos, sin = self.rotary_emb(hidden_states, position_ids)
+            position_embeddings = (cos, sin)
+        elif self.config.pe_type == 'fpe':
+            # 新方式：Fourier PE (branch) + 1D RoPE (time)
+            # 1. 从pos2d提取branch_ids和time_ids
+            branch_ids = pos2d[:, :, 0]  # [batch, seq]
+            time_ids = pos2d[:, :, 1]    # [batch, seq]
+
+            # 2. Branch通过stride映射到FPE的位置空间
+            # 例如：branch_id=0 -> pos=0, branch_id=1 -> pos=128 (if stride=128)
+            branch_positions = (branch_ids / self.config.branch_stride).long()
+
+            # 3. 添加Fourier PE (branch编码)
+            branch_pe = self.fourier_pe(branch_positions)  # [batch, seq, hidden]
+            hidden_states = hidden_states + branch_pe
+
+            # 4. 使用1D RoPE (只基于time)
+            cos, sin = self.rotary_emb(hidden_states, time_ids)
+            position_embeddings = (cos, sin)
 
         presents = []
         for layer_idx, (layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
