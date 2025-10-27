@@ -348,7 +348,7 @@ if __name__ == "__main__":
             batch_size=effective_batch_size,
             pin_memory=True,
             drop_last=drop_last,
-            shuffle=False,
+            shuffle=(train_sampler is None),  # 只有在没有sampler时才shuffle
             num_workers=args.num_workers,
             sampler=train_sampler,
             collate_fn=collator,
