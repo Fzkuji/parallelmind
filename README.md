@@ -448,6 +448,34 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --ddp
 ```
 
+**（可选）使用分支分离损失**
+
+如果发现不同branch生成的内容容易混淆，可以使用分支分离损失来强化区分：
+
+```bash
+torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe fpe \
+  --sep_loss \
+  --sep_weight 0.1 \
+  --epochs 4 \
+  --batch_size 4 \
+  --batch_by_samples \
+  --max_branches_per_sample 4 \
+  --min_branches_per_sample 1 \
+  --max_total_tokens 0 \
+  --init_weight out/fpe_stage1/pretrain_512.pth \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --out_dir out/fpe_stage2_sep \
+  --ddp
+```
+
+**分支分离损失说明**：
+- `--sep_loss`：启用分支分离损失（默认关闭）
+- `--sep_weight 0.1`：分离损失的权重，可调整范围0.05-0.5
+- **工作原理**：通过余弦相似度惩罚，让同一时间步的不同branch的logits向量远离
+- **效果**：减少branch混淆，让每个branch生成更独特的内容
+- **日志输出**：训练时会显示 `main:X.XX sep:X.XX`，sep值越低表示branch区分度越高
+
 **推理测试**：
 
 ```bash
