@@ -319,81 +319,84 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
 
 以下命令默认在仓库根目录执行（若已 `cd trainer`，可去掉命令中的 `trainer/` 前缀）。
 
-1. **逐个 branch 维度循环训练（可选但推荐预热）**
+---
+
+### 方法1：RoPE 2D（Baseline）
+
+使用2D RoPE进行branch位置编码（需要较大stride来区分不同branch）。
+
+**阶段一：单branch循环训练（预热）**
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe rope \
   --epochs 1 \
   --batch_size 32 \
   --branches_per_sample 1 \
   --branch_slice_count 8 \
   --branch_loop_all \
-  --out_dir out/pretrain_branch_sweep \
+  --out_dir out/rope_stage1 \
   --max_total_tokens 0 \
   --data_path dataset/pretrain_hq.jsonl \
   --ddp
 ```
 
-加了 `--branch_loop_all` 后，脚本会在一次运行中自动遍历 branch 维度 0→7；每个分片训练结束，模型参数会直接保留并继续训练下一个分片，最终输出保存在 `out/pretrain_branch_sweep/pretrain_512.pth`（若隐藏维度不同，请替换文件名中的 `512`）。
-`--data_path` 指向要训练的数据文件，若要使用其他预训练语料，只需把路径换成对应的 `jsonl`。
+**参数说明**：
+- `--pe rope`：使用RoPE 2D（默认值，可省略）
+- `--branch_loop_all`：自动遍历所有branch维度（0→7）
+- `--branch_slice_count 8`：将数据集分成8个slice
+- 默认branch stride为128（在代码中自动设置）
+- 输出：`out/rope_stage1/pretrain_512.pth`
 
-   训练完成后，可以用同一条文本依次放到不同 branch 位置，观察预训练模型的“策划师”式布局效果。以下示例使用第一阶段输出的权重 (`out/pretrain_branch_sweep/pretrain_512.pth`)，把同一句话依次放在 branch0 → branch3（其余分支直接留空即可）：
-
-```bash
-# 文本位于 branch0
-   python parallel_generate.py \
-     --mode pretrain \
-     --prompts "请介绍一下自己：" "" "" "" \
-     --branches_per_sample 4 \
-     --debug \
-     --model_path out/pretrain_branch_sweep/pretrain_512.pth \
-     --streaming
-```
-
-```bash
-# 文本位于 branch1
-python parallel_generate.py \
-  --mode pretrain \
-  --prompts "" "请介绍一下自己：" "" "" \
-  --branches_per_sample 4 \
-  --debug \
-  --model_path out/pretrain_branch_sweep/pretrain_512.pth \
-  --streaming
-# 以此类推测试 branch2、branch3……
-```
-
-   预训练模式会自动在输入前加上 `<|im_start|>`，因此直接输入纯文本即可，其余分支留空也没问题。
-
-2. **阶段二：加载上一阶段权重，进行动态多分支训练（1-32 分支）**
+**阶段二：多branch动态训练**
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe rope \
   --epochs 1 \
   --batch_size 4 \
   --batch_by_samples \
   --max_branches_per_sample 32 \
   --min_branches_per_sample 1 \
   --max_total_tokens 0 \
-  --init_weight out/pretrain_branch_sweep/pretrain_512.pth \
+  --init_weight out/rope_stage1/pretrain_512.pth \
   --data_path dataset/pretrain_hq_split.jsonl \
-  --out_dir out/pretrain_dynamic \
+  --out_dir out/rope_stage2 \
   --ddp
 ```
 
-Stage 2 默认使用列式交错 mask（与推理端一致），无需再额外设置。
+**推理测试**（RoPE 2D模型）：
+
+```bash
+python parallel_generate.py \
+  --mode pretrain \
+  --prompts "为什么太阳东升西落" "请介绍下大语言模型" \
+  --branches_per_sample 2 \
+  --model_path out/rope_stage2/pretrain_512.pth \
+  --streaming \
+  --pe rope
+```
+
+**已知问题**：
+- Branch区分度较低（93-99%相似度）
+- 需要大stride（128）才能区分不同branch
+- 训练收敛较慢，loss通常卡在2.5左右
 
 ---
 
 ### 方法2：Fourier PE + 1D RoPE（新方法，推荐）
 
+使用Fourier位置编码区分branch，避免RoPE 2D的高相似度问题。
+
 **核心区别**：
-- **Branch维度**：使用Fourier位置编码（直接加在embedding上）
-- **Time维度**：使用标准1D RoPE（相对位置编码）
-- **优势**：Branch区分度更高（31%相似度 vs RoPE 2D的93-99%），训练更容易收敛
+- **Branch维度**：Fourier位置编码（绝对编码，直接加在embedding上）
+- **Time维度**：标准1D RoPE（相对位置编码）
+- **优势**：
+  - Branch区分度更高（31%相似度 vs RoPE 2D的93-99%）
+  - 不需要大stride（使用直接索引0,1,2,3...）
+  - 训练收敛更快，loss可降至1.5以下（RoPE 2D通常卡在2.5）
 
-**训练流程**（推荐两阶段）：
-
-**阶段一：单branch预热**
+**阶段一：单branch循环训练（预热）**
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
@@ -409,11 +412,14 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --ddp
 ```
 
-- `--pe fpe`：使用Fourier PE（关键参数）
-- 其他参数与RoPE 2D模式相同
+**参数说明**：
+- `--pe fpe`：**使用Fourier PE**（关键参数，区别于RoPE 2D）
+- `--branch_loop_all`：自动遍历所有branch维度（0→7）
+- `--branch_slice_count 8`：将数据集分成8个slice
+- 默认branch stride为1（自动设置，与RoPE的128形成对比）
 - 输出：`out/fpe_stage1/pretrain_512.pth`
 
-**阶段二：多branch训练（从4个branch开始）**
+**阶段二：多branch动态训练**
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
@@ -430,8 +436,10 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --ddp
 ```
 
-- 建议从2个branch开始，训练稳定后再增加到4、8个
-- FPE模式下branch使用直接索引（0,1,2,3...），不需要大的stride
+**参数说明**：
+- 建议从2-4个branch开始，训练稳定后再增加到8个或更多
+- `--batch_by_samples`：batch_size表示样本数（而非文本数）
+- `--max_branches_per_sample 4`：每个样本最多4个branch（动态范围1-4）
 
 **（可选）阶段三：增加到更多branch**
 
@@ -472,11 +480,16 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
 **分支分离损失说明**：
 - `--sep_loss`：启用分支分离损失（默认关闭）
 - `--sep_weight 0.1`：分离损失的权重，可调整范围0.05-0.5
-- **工作原理**：通过余弦相似度惩罚，让同一时间步的不同branch的logits向量远离
+- **工作原理**（对比损失）：
+  - 惩罚：如果branch A预测了branch B的正确token（且A、B的正确答案不同）
+  - 不惩罚：如果两个branch的正确答案本来就相同
+  - 智能区分："错误的混淆"vs"正确的相同"
 - **效果**：减少branch混淆，让每个branch生成更独特的内容
-- **日志输出**：训练时会显示 `main:X.XX sep:X.XX`，sep值越低表示branch区分度越高
+- **日志输出**：训练时会显示 `main:X.XX sep:X.XX`
+  - `sep`表示预测其他branch正确token的平均概率
+  - `sep`值越低越好（理想值接近0）
 
-**推理测试**：
+**推理测试**（Fourier PE模型）：
 
 ```bash
 python parallel_generate.py \
@@ -488,24 +501,105 @@ python parallel_generate.py \
   --pe fpe
 ```
 
-- `--pe fpe`：指定使用FPE模式（也可以不指定，脚本会自动检测）
+**参数说明**：
+- `--pe fpe`：指定使用FPE模式（也可以不指定，脚本会自动从checkpoint检测）
+- `--streaming`：启用单行滚动显示，减少打印行数
 
-**对比实验**：
+---
 
-可以同时训练RoPE和FPE两个版本进行对比：
+### 方法对比与选择建议
+
+**对比实验**（可同时训练两个版本进行对比）：
 
 ```bash
-# RoPE 2D baseline
-torchrun --nproc_per_node 8 trainer/train_pretrain.py --pe rope --out_dir out/rope_baseline --ddp ...
+# 方法1：RoPE 2D (Baseline)
+torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe rope \
+  --epochs 2 \
+  --batch_size 32 \
+  --branches_per_sample 1 \
+  --branch_slice_count 8 \
+  --branch_loop_all \
+  --out_dir out/rope_compare \
+  --data_path dataset/pretrain_hq.jsonl \
+  --ddp
 
-# Fourier PE
-torchrun --nproc_per_node 8 trainer/train_pretrain.py --pe fpe --out_dir out/fpe_new --ddp ...
+# 方法2：Fourier PE (推荐)
+torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe fpe \
+  --epochs 2 \
+  --batch_size 32 \
+  --branches_per_sample 1 \
+  --branch_slice_count 8 \
+  --branch_loop_all \
+  --out_dir out/fpe_compare \
+  --data_path dataset/pretrain_hq.jsonl \
+  --ddp
 ```
 
-**预期效果**：
-- Loss应该更容易降低（< 1.5，RoPE通常卡在2.5）
-- 多branch推理质量更好，更少gibberish
-- 训练速度相近
+**预期效果对比**：
+
+| 指标 | RoPE 2D (Baseline) | Fourier PE (推荐) |
+|------|-------------------|-------------------|
+| Branch相似度 | 93-99% (容易混淆) | 31% (区分度高) |
+| Branch stride | 128 (需要大stride) | 1 (直接索引) |
+| 训练Loss | ~2.5 (难收敛) | <1.5 (易收敛) |
+| 生成质量 | 容易出现gibberish | 更稳定、更少混淆 |
+| 训练速度 | 正常 | 正常 (相近) |
+
+**选择建议**：
+- ✅ **推荐使用Fourier PE**：更高的branch区分度，更好的训练效果
+- ⚠️ RoPE 2D仅用于baseline对比或特殊需求
+
+---
+
+### 快速开始（推荐流程）
+
+**最简单的入门流程**（使用Fourier PE）：
+
+```bash
+# 1. 阶段一：单branch预热（约1-2小时，8×GPU）
+torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe fpe \
+  --epochs 2 \
+  --batch_size 32 \
+  --branches_per_sample 1 \
+  --branch_slice_count 8 \
+  --branch_loop_all \
+  --out_dir out/fpe_stage1 \
+  --data_path dataset/pretrain_hq.jsonl \
+  --ddp
+
+# 2. 阶段二：多branch训练（约2-4小时，8×GPU）
+torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --pe fpe \
+  --sep_loss \
+  --sep_weight 0.1 \
+  --epochs 4 \
+  --batch_size 4 \
+  --batch_by_samples \
+  --max_branches_per_sample 4 \
+  --min_branches_per_sample 1 \
+  --init_weight out/fpe_stage1/pretrain_512.pth \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --out_dir out/fpe_stage2 \
+  --ddp
+
+# 3. 推理测试
+python parallel_generate.py \
+  --mode pretrain \
+  --prompts "为什么太阳东升西落" "请介绍下大语言模型" \
+  --branches_per_sample 2 \
+  --model_path out/fpe_stage2/pretrain_512.pth \
+  --streaming
+```
+
+**关键参数总结**：
+- `--pe fpe`：使用Fourier PE（核心改进）
+- `--sep_loss --sep_weight 0.1`：使用分支分离损失（减少branch混淆）
+- `--branch_loop_all`：自动遍历所有branch slice（省时省力）
+- `--batch_by_samples`：按样本数batching（适合动态多branch）
+- `--streaming`：推理时单行滚动显示（简洁输出）
 
 </details>
 

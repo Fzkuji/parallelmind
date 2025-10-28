@@ -40,7 +40,12 @@ def get_lr(current_step, total_steps, lr):
 
 def compute_branch_separation_loss(logits, labels, time_ids, pos2d, ignore_index=-100, sep_weight=0.1):
     """
-    分支分离损失：同一时间步不同branch的logits向量应该远离（避免branch混淆）
+    分支分离损失（对比版本）：惩罚预测其他branch的正确token
+
+    核心思想：
+    - 如果branch A预测了branch B的正确token（且A、B的正确答案不同），就惩罚
+    - 如果两个branch的正确答案本来就相同，不惩罚
+    - 只惩罚"错误的混淆"，不惩罚"正确的相同"
 
     Args:
         logits: [batch, seq, vocab] 模型预测
@@ -53,7 +58,7 @@ def compute_branch_separation_loss(logits, labels, time_ids, pos2d, ignore_index
     Returns:
         total_loss: 总损失
         main_loss: 主损失（cross-entropy）
-        sep_loss: 分离损失（余弦相似度惩罚）
+        sep_loss: 分离损失（对比损失）
     """
     batch_size, _, vocab_size = logits.shape
 
@@ -61,7 +66,7 @@ def compute_branch_separation_loss(logits, labels, time_ids, pos2d, ignore_index
     loss_fct = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction='mean')
     main_loss = loss_fct(logits.view(-1, vocab_size), labels.view(-1))
 
-    # 分离loss：让同一时间步不同branch的logits向量远离
+    # 分离loss：惩罚预测其他branch的正确token
     sep_loss = 0.0
     sep_count = 0
 
@@ -79,19 +84,32 @@ def compute_branch_separation_loss(logits, labels, time_ids, pos2d, ignore_index
 
             time_positions = torch.where(time_mask)[0]
             time_logits = logits[b][time_positions]  # [n_branches, vocab]
+            time_labels = labels[b][time_positions]  # [n_branches]
 
-            # 计算两两余弦相似度
-            time_logits_norm = F.normalize(time_logits, p=2, dim=-1)
-            similarity_matrix = torch.mm(time_logits_norm, time_logits_norm.t())
+            # 计算每个branch的预测概率分布
+            probs = F.softmax(time_logits, dim=-1)  # [n_branches, vocab]
 
-            # 只取上三角（避免重复和对角线）
-            n = similarity_matrix.shape[0]
-            mask = torch.triu(torch.ones(n, n, device=similarity_matrix.device), diagonal=1).bool()
-            similarities = similarity_matrix[mask]
+            # 对每个branch，惩罚预测其他branch的正确token
+            n_branches = time_positions.shape[0]
+            for i in range(n_branches):
+                curr_label = time_labels[i]
+                curr_probs = probs[i]  # [vocab]
 
-            # 惩罚高相似度（希望相似度低，让branch区分开）
-            sep_loss += similarities.sum()
-            sep_count += similarities.shape[0]
+                # 收集其他branch的正确tokens（负样本）
+                for j in range(n_branches):
+                    if i == j:
+                        continue
+
+                    other_label = time_labels[j]
+
+                    # 如果两个branch的正确答案本来就相同，跳过（不惩罚）
+                    if curr_label == other_label:
+                        continue
+
+                    # 惩罚：当前branch预测了其他branch的正确token的概率
+                    negative_prob = curr_probs[other_label]
+                    sep_loss += negative_prob
+                    sep_count += 1
 
     if sep_count > 0:
         sep_loss = sep_loss / sep_count
