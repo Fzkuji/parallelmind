@@ -181,27 +181,27 @@ def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final
             print(f"Response: {text}")
     else:
         # 流式更新：多行实时刷新
-        # 如果不是第一次更新，向上移动光标到开始位置
-        if num_branches > 0:
-            # ANSI escape code: 向上移动 num_branches 行
-            sys.stdout.write(f"\033[{num_branches}A")
+        # 向上移动光标到开始位置（覆盖之前打印的内容）
+        sys.stdout.write(f"\033[{num_branches}A")
 
         # 打印每个branch的当前状态
         for idx, text in enumerate(branch_texts):
-            # 清除当前行
-            sys.stdout.write("\033[K")
+            # 清除当前行到行尾
+            sys.stdout.write("\033[2K")
 
             # 显示内容（截断到合理长度）
-            max_display_len = 100
+            max_display_len = 80
             display_text = text[-max_display_len:] if len(text) > max_display_len else text
-            display_text = display_text.replace('\n', ' ').replace('\r', ' ')
+            display_text = display_text.replace('\n', '↵').replace('\r', '')
 
             # 打印: Branch X (字数): 生成的文本...
-            line = f"Branch {idx} ({len(text)}字): {display_text}"
             if len(text) > max_display_len:
-                line = f"Branch {idx} ({len(text)}字): ...{display_text}"
+                line = f"Branch {idx} ({len(text):3d}字): ...{display_text}"
+            else:
+                line = f"Branch {idx} ({len(text):3d}字): {display_text}"
 
-            print(line)
+            # 打印并换行
+            sys.stdout.write(line + "\n")
 
         # 刷新输出
         sys.stdout.flush()
