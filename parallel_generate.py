@@ -181,27 +181,37 @@ def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final
             print(f"Response: {text}")
     else:
         # 流式更新：多行实时刷新
-        # 向上移动光标到开始位置（覆盖之前打印的内容）
-        sys.stdout.write(f"\033[{num_branches}A")
+        # 先清屏，然后重新打印所有行
+        sys.stdout.write("\033[2J\033[H")  # 清屏并移动到左上角
+
+        # 打印标题
+        sys.stdout.write("=" * 80 + "\n")
+        sys.stdout.write(f"生成中... (共{num_branches}个branches)\n")
+        sys.stdout.write("=" * 80 + "\n\n")
 
         # 打印每个branch的当前状态
-        for idx, text in enumerate(branch_texts):
-            # 清除当前行到行尾
-            sys.stdout.write("\033[2K")
+        for idx, (text, prompt) in enumerate(zip(branch_texts, prompts)):
+            # 显示prompt（截断）
+            prompt_display = prompt[:40] + "..." if len(prompt) > 40 else prompt
+            sys.stdout.write(f"Branch {idx}: {prompt_display}\n")
 
-            # 显示内容（截断到合理长度）
-            max_display_len = 80
+            # 显示生成的内容（限制在60字符内，避免溢出）
+            max_display_len = 60
             display_text = text[-max_display_len:] if len(text) > max_display_len else text
             display_text = display_text.replace('\n', '↵').replace('\r', '')
 
-            # 打印: Branch X (字数): 生成的文本...
             if len(text) > max_display_len:
-                line = f"Branch {idx} ({len(text):3d}字): ...{display_text}"
+                line = f"  ({len(text):3d}字) ...{display_text}"
+            elif len(text) > 0:
+                line = f"  ({len(text):3d}字) {display_text}"
             else:
-                line = f"Branch {idx} ({len(text):3d}字): {display_text}"
+                line = f"  (  0字) <等待生成...>"
 
-            # 打印并换行
-            sys.stdout.write(line + "\n")
+            # 确保行长度不超过80字符
+            if len(line) > 78:
+                line = line[:75] + "..."
+
+            sys.stdout.write(line + "\n\n")
 
         # 刷新输出
         sys.stdout.flush()
