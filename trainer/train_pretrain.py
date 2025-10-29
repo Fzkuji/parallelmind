@@ -148,14 +148,16 @@ def train_epoch(epoch, wandb):
                 position_ids=batch["position_ids"],
                 pos2d=batch["pos2d"],
             )
-            logits = outputs.logits[:, :-1, :].contiguous()
-            labels = batch["labels"][:, 1:].contiguous()
+            # 注意：不再需要shift操作，因为collator已经构造了正确的per-branch labels
+            # logits[i]直接对应labels[i]（每个token预测同branch的下一个token）
+            logits = outputs.logits.contiguous()
+            labels = batch["labels"].contiguous()
 
             # 根据配置选择损失函数
             if args.sep_loss:
                 # 使用分支分离损失：同一时间步的不同branch应该有不同的预测
-                time_ids = batch["time_ids"][:, 1:].contiguous()
-                pos2d = batch["pos2d"][:, 1:, :].contiguous()
+                time_ids = batch["time_ids"].contiguous()
+                pos2d = batch["pos2d"].contiguous()
                 loss, main_loss, sep_loss_val = compute_branch_separation_loss(
                     logits, labels, time_ids, pos2d,
                     ignore_index=-100,

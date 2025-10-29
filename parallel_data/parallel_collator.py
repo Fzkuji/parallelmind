@@ -135,8 +135,29 @@ class ParallelPretrainCollator:
             dtype=torch.long,
         )
 
-        labels = layout.input_ids.clone()
-        labels[layout.attention_mask == 0] = -100
+        # 构造正确的labels：每个token应该预测同一branch的下一个time的token
+        # 而不是简单的shift=1（那样会预测到其他branch的token）
+        labels = torch.full_like(layout.input_ids, fill_value=-100)
+
+        for batch_idx, meta in enumerate(layout.metadata):
+            # 对每个branch，找到它的所有token位置，并设置正确的label
+            for branch_idx, branch_id in enumerate(meta.branch_ids):
+                branch_pos = meta.branch_positions[branch_idx]
+
+                # 找到该branch的所有有效token位置
+                mask = (layout.pos2d[batch_idx, :, 0] == branch_pos) & (layout.attention_mask[batch_idx] == 1)
+                indices = mask.nonzero(as_tuple=True)[0]
+
+                if indices.numel() <= 1:
+                    # 如果该branch只有0或1个token，没有下一个token可预测
+                    continue
+
+                # 对于该branch的每个token（除了最后一个），它的label是下一个token
+                # indices[i]位置的token应该预测indices[i+1]位置的token
+                for i in range(len(indices) - 1):
+                    src_pos = indices[i].item()
+                    tgt_pos = indices[i + 1].item()
+                    labels[batch_idx, src_pos] = layout.input_ids[batch_idx, tgt_pos].item()
 
         return {
             "input_ids": layout.input_ids,
@@ -187,16 +208,24 @@ class ParallelSFTCollator:
             random_time_offset=self.random_time_offset,
         )
 
-        labels = layout.input_ids.clone()
-        labels[layout.attention_mask == 0] = -100
+        # 构造正确的labels：每个token应该预测同一branch的下一个time的token
+        labels = torch.full_like(layout.input_ids, fill_value=-100)
 
         for batch_idx, meta in enumerate(layout.metadata):
             for branch_idx, branch_id in enumerate(meta.branch_ids):
                 branch_pos = meta.branch_positions[branch_idx]
                 mask = (layout.pos2d[batch_idx, :, 0] == branch_pos) & (layout.attention_mask[batch_idx] == 1)
                 indices = mask.nonzero(as_tuple=True)[0]
-                if indices.numel() == 0:
+                if indices.numel() <= 1:
                     continue
+
+                # 设置正确的next-token labels
+                for i in range(len(indices) - 1):
+                    src_pos = indices[i].item()
+                    tgt_pos = indices[i + 1].item()
+                    labels[batch_idx, src_pos] = layout.input_ids[batch_idx, tgt_pos].item()
+
+                # 对于SFT，在answer_offset之前的token不参与loss计算
                 answer_start = meta.answer_token_starts[branch_idx]
                 answer_start = max(0, min(answer_start, indices.numel()))
                 if answer_start > 0:
