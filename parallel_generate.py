@@ -159,44 +159,51 @@ def sample_token(logits: torch.Tensor, args) -> torch.Tensor:
     return token_id.view(1)
 
 
-def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final: bool = False):
+def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final: bool = False, num_branches: int = 0):
     """
-    实时更新多个branch的生成进度
+    实时更新多个branch的生成进度 - 每个branch占一行
 
     Args:
         branch_texts: 每个branch当前生成的文本
         prompts: 每个branch的原始prompt
         is_final: 是否是最终结果
+        num_branches: branch总数（用于控制光标移动）
     """
     if is_final:
-        # 换行后打印最终结果
+        # 最终结果：换行后打印
         print("\n" + "=" * 80)
         print("生成完成")
         print("=" * 80)
         for idx, (prompt, text) in enumerate(zip(prompts, branch_texts)):
             print(f"\n【Branch {idx}】")
-            # 截断过长的prompt
             prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt
             print(f"Prompt: {prompt_display}")
             print(f"Response: {text}")
     else:
-        # 流式更新：单行进度显示
-        # 格式: B0:25字[预览文本] | B1:30字[预览文本] | ...
-        status_parts = []
-        for idx, text in enumerate(branch_texts):
-            char_count = len(text)
-            # 显示最后15个字符作为预览
-            preview = text[-15:] if len(text) > 15 else text
-            preview = preview.replace('\n', ' ').replace('\r', ' ')  # 去掉换行符
-            status_parts.append(f"B{idx}:{char_count}字[{preview}]")
+        # 流式更新：多行实时刷新
+        # 如果不是第一次更新，向上移动光标到开始位置
+        if num_branches > 0:
+            # ANSI escape code: 向上移动 num_branches 行
+            sys.stdout.write(f"\033[{num_branches}A")
 
-        status_line = " | ".join(status_parts)
-        # 使用\r回到行首，覆盖上一次的输出
-        # 限制总长度避免换行
-        max_width = 120
-        if len(status_line) > max_width:
-            status_line = status_line[:max_width-3] + "..."
-        sys.stdout.write(f"\r{status_line}")
+        # 打印每个branch的当前状态
+        for idx, text in enumerate(branch_texts):
+            # 清除当前行
+            sys.stdout.write("\033[K")
+
+            # 显示内容（截断到合理长度）
+            max_display_len = 100
+            display_text = text[-max_display_len:] if len(text) > max_display_len else text
+            display_text = display_text.replace('\n', ' ').replace('\r', ' ')
+
+            # 打印: Branch X (字数): 生成的文本...
+            line = f"Branch {idx} ({len(text)}字): {display_text}"
+            if len(text) > max_display_len:
+                line = f"Branch {idx} ({len(text)}字): ...{display_text}"
+
+            print(line)
+
+        # 刷新输出
         sys.stdout.flush()
 
 
@@ -346,9 +353,10 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             print("\n" + "=" * 80)
             print(f"开始生成 ({branch_count} branches)...")
             print("=" * 80)
-            # 单行进度显示，不需要预留多行空间
-            sys.stdout.write("初始化中...")
-            sys.stdout.flush()
+            # 预留多行空间用于实时更新
+            for idx in range(branch_count):
+                print(f"Branch {idx}: 初始化中...")
+            streaming_update_count = 0  # 记录更新次数
 
         # 增量生成循环 - 列同步
         for step_idx in range(args.max_new_tokens):
@@ -497,7 +505,8 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
             # Streaming显示更新
             if streaming:
-                print_streaming_update(branch_texts, original_prompts, is_final=False)
+                streaming_update_count += 1
+                print_streaming_update(branch_texts, original_prompts, is_final=False, num_branches=branch_count)
 
         # 解码结果
         if debug:
