@@ -191,27 +191,28 @@ def print_streaming_update(branch_texts: List[str], prompts: List[str], is_final
 
         # 打印每个branch的当前状态
         for idx, (text, prompt) in enumerate(zip(branch_texts, prompts)):
-            # 显示prompt（截断）
-            prompt_display = prompt[:40] + "..." if len(prompt) > 40 else prompt
+            # 显示prompt（截断到合理长度）
+            prompt_display = prompt[:60] + "..." if len(prompt) > 60 else prompt
             sys.stdout.write(f"Branch {idx}: {prompt_display}\n")
 
-            # 显示生成的内容（限制在60字符内，避免溢出）
-            max_display_len = 60
-            display_text = text[-max_display_len:] if len(text) > max_display_len else text
-            display_text = display_text.replace('\n', '↵').replace('\r', '')
+            # 显示生成的内容（支持自动换行，不省略）
+            display_text = text.replace('\n', '↵')  # 保留原始换行标记
 
-            if len(text) > max_display_len:
-                line = f"  ({len(text):3d}字) ...{display_text}"
-            elif len(text) > 0:
-                line = f"  ({len(text):3d}字) {display_text}"
+            if len(display_text) > 0:
+                # 手动分行显示，每行最多70个字符
+                line_width = 70
+                lines = []
+                for i in range(0, len(display_text), line_width):
+                    lines.append(display_text[i:i+line_width])
+
+                # 显示字数和内容
+                sys.stdout.write(f"  ({len(text):3d}字)\n")
+                for line in lines:
+                    sys.stdout.write(f"  {line}\n")
             else:
-                line = f"  (  0字) <等待生成...>"
+                sys.stdout.write(f"  (  0字) <等待生成...>\n")
 
-            # 确保行长度不超过80字符
-            if len(line) > 78:
-                line = line[:75] + "..."
-
-            sys.stdout.write(line + "\n\n")
+            sys.stdout.write("\n")  # branch之间空一行
 
         # 刷新输出
         sys.stdout.flush()
