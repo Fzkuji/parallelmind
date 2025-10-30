@@ -1,8 +1,14 @@
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, List, Sequence
+
+# 设置路径，使脚本能从scripts目录运行
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if root_path not in sys.path:
+    sys.path.insert(0, root_path)
 
 import torch
 from transformers import AutoTokenizer
