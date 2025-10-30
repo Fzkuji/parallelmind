@@ -170,6 +170,10 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=4)
+    parser.add_argument('--max_branches_per_sample', type=int, default=None,
+                        help='Maximum branches per sample for dynamic mode (enables variable branch count)')
+    parser.add_argument('--min_branches_per_sample', type=int, default=1,
+                        help='Minimum branches per sample for dynamic mode')
     parser.add_argument('--use_moe', default=False, type=bool)
     parser.add_argument('--pe', type=str, default='rope', choices=['rope', 'fpe'],
                         help='Position encoding: rope (RoPE 2D, branch_stride=128) or fpe (Fourier PE, branch_stride=1)')
@@ -230,11 +234,15 @@ if __name__ == "__main__":
     collator = ParallelSFTCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
+        max_branches_per_sample=args.max_branches_per_sample,
+        min_branches_per_sample=args.min_branches_per_sample,
         pad_to=args.max_seq_len,
         branch_stride=branch_stride,
     )
     train_sampler = DistributedSampler(train_ds, drop_last=True) if ddp else None
-    effective_batch_size = args.batch_size * args.branches_per_sample
+    # 动态模式使用max_branches计算batch_size
+    branches_for_batch = args.max_branches_per_sample if args.max_branches_per_sample else args.branches_per_sample
+    effective_batch_size = args.batch_size * branches_for_batch
     train_loader = DataLoader(
         train_ds,
         batch_size=effective_batch_size,

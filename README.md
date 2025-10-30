@@ -366,7 +366,7 @@ python scripts/parallel_generate.py \
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe fpe \
-  --epochs 20 \
+  --epochs 1 \
   --batch_size 4 \
   --batch_by_samples \
   --max_branches_per_sample 4 \
@@ -408,10 +408,11 @@ python scripts/parallel_generate.py \
 torchrun --nproc_per_node 8 trainer/train_full_sft.py \
   --epochs 2 \
   --batch_size 4 \
-  --branches_per_sample 4 \
+  --max_branches_per_sample 8 \
+  --min_branches_per_sample 1 \
   --max_seq_len 512 \
   --pe rope \
-  --data_path dataset/sft_data.jsonl \
+  --data_path dataset/sft_512.jsonl \
   --init_weight out/pretrain_512.pth \
   --out_dir out \
   --ddp
@@ -420,16 +421,18 @@ torchrun --nproc_per_node 8 trainer/train_full_sft.py \
 python trainer/train_full_sft.py \
   --epochs 2 \
   --batch_size 4 \
-  --branches_per_sample 4 \
+  --max_branches_per_sample 8 \
+  --min_branches_per_sample 1 \
   --max_seq_len 512 \
   --pe rope \
-  --data_path dataset/sft_data.jsonl \
+  --data_path dataset/sft_512.jsonl \
   --init_weight out/pretrain_512.pth \
   --out_dir out
 ```
 
 参数说明：
-- `--branches_per_sample`: 每个样本的并行分支数（4表示4个对话并行训练）
+- `--max_branches_per_sample`: 每个样本的最大并行分支数（启用动态branch模式）
+- `--min_branches_per_sample`: 每个样本的最小并行分支数（默认1）
 - `--pe`: 位置编码方法（rope=RoPE 2D推荐，fpe=Fourier PE实验性）
 - `--init_weight`: 预训练模型路径
 - `--data_path`: SFT数据路径（JSONL格式，每行一个对话样本）
