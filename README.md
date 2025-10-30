@@ -419,8 +419,8 @@ torchrun --nproc_per_node 8 trainer/train_full_sft.py \
 
 # 单卡训练
 python trainer/train_full_sft.py \
-  --epochs 2 \
-  --batch_size 4 \
+  --epochs 1 \
+  --batch_size 16 \
   --max_branches_per_sample 8 \
   --min_branches_per_sample 1 \
   --max_seq_len 512 \
