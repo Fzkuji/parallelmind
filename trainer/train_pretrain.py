@@ -16,7 +16,6 @@ import warnings
 import torch
 import torch.distributed as dist
 from torch import optim, nn
-from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from contextlib import nullcontext
@@ -36,89 +35,6 @@ def Logger(content):
 
 def get_lr(current_step, total_steps, lr):
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
-
-
-def compute_branch_separation_loss(logits, labels, time_ids, pos2d, ignore_index=-100, sep_weight=0.1):
-    """
-    分支分离损失（对比版本）：惩罚预测其他branch的正确token
-
-    核心思想：
-    - 如果branch A预测了branch B的正确token（且A、B的正确答案不同），就惩罚
-    - 如果两个branch的正确答案本来就相同，不惩罚
-    - 只惩罚"错误的混淆"，不惩罚"正确的相同"
-
-    Args:
-        logits: [batch, seq, vocab] 模型预测
-        labels: [batch, seq] 真实标签
-        time_ids: [batch, seq] 时间步ID
-        pos2d: [batch, seq, 2] 2D位置 (branch_id, time_id)
-        ignore_index: 忽略的标签值
-        sep_weight: 分离损失的权重
-
-    Returns:
-        total_loss: 总损失
-        main_loss: 主损失（cross-entropy）
-        sep_loss: 分离损失（对比损失）
-    """
-    batch_size, _, vocab_size = logits.shape
-
-    # 主loss：标准cross-entropy
-    loss_fct = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction='mean')
-    main_loss = loss_fct(logits.view(-1, vocab_size), labels.view(-1))
-
-    # 分离loss：惩罚预测其他branch的正确token
-    sep_loss = 0.0
-    sep_count = 0
-
-    for b in range(batch_size):
-        valid_mask = (labels[b] != ignore_index)
-        if valid_mask.sum() == 0:
-            continue
-
-        unique_times = time_ids[b][valid_mask].unique()
-
-        for t in unique_times:
-            time_mask = (time_ids[b] == t) & valid_mask
-            if time_mask.sum() <= 1:  # 至少2个branch才能对比
-                continue
-
-            time_positions = torch.where(time_mask)[0]
-            time_logits = logits[b][time_positions]  # [n_branches, vocab]
-            time_labels = labels[b][time_positions]  # [n_branches]
-
-            # 计算每个branch的预测概率分布
-            probs = F.softmax(time_logits, dim=-1)  # [n_branches, vocab]
-
-            # 对每个branch，惩罚预测其他branch的正确token
-            n_branches = time_positions.shape[0]
-            for i in range(n_branches):
-                curr_label = time_labels[i]
-                curr_probs = probs[i]  # [vocab]
-
-                # 收集其他branch的正确tokens（负样本）
-                for j in range(n_branches):
-                    if i == j:
-                        continue
-
-                    other_label = time_labels[j]
-
-                    # 如果两个branch的正确答案本来就相同，跳过（不惩罚）
-                    if curr_label == other_label:
-                        continue
-
-                    # 惩罚：当前branch预测了其他branch的正确token的概率
-                    negative_prob = curr_probs[other_label]
-                    sep_loss += negative_prob
-                    sep_count += 1
-
-    if sep_count > 0:
-        sep_loss = sep_loss / sep_count
-    else:
-        sep_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-
-    total_loss = main_loss + sep_weight * sep_loss
-
-    return total_loss, main_loss, sep_loss
 
 
 def train_epoch(epoch, wandb):
@@ -153,21 +69,8 @@ def train_epoch(epoch, wandb):
             logits = outputs.logits.contiguous()
             labels = batch["labels"].contiguous()
 
-            # 根据配置选择损失函数
-            if args.sep_loss:
-                # 使用分支分离损失：同一时间步的不同branch应该有不同的预测
-                time_ids = batch["time_ids"].contiguous()
-                pos2d = batch["pos2d"].contiguous()
-                loss, main_loss, sep_loss_val = compute_branch_separation_loss(
-                    logits, labels, time_ids, pos2d,
-                    ignore_index=-100,
-                    sep_weight=args.sep_weight
-                )
-            else:
-                # 使用标准的独立token损失
-                loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
-                main_loss = loss
-                sep_loss_val = torch.tensor(0.0, device=loss.device)
+            # 计算交叉熵损失
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
 
             if hasattr(outputs, "aux_loss"):
                 loss = loss + outputs.aux_loss
@@ -197,45 +100,26 @@ def train_epoch(epoch, wandb):
                 remaining_time = 0
 
             # 构建日志信息
-            if args.sep_loss:
-                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} main:{:.3f} sep:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
-                    epoch + 1,
-                    args.epochs,
-                    processed_dataset_samples,
-                    total_samples,
-                    step,
-                    loss.item() * args.accumulation_steps,
-                    main_loss.item(),
-                    sep_loss_val.item(),
-                    optimizer.param_groups[-1]['lr'],
-                    batch["input_ids"].shape[0],
-                    batch_seq_len,
-                    int(remaining_time // 60))
-            else:
-                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
-                    epoch + 1,
-                    args.epochs,
-                    processed_dataset_samples,
-                    total_samples,
-                    step,
-                    loss.item() * args.accumulation_steps,
-                    optimizer.param_groups[-1]['lr'],
-                    batch["input_ids"].shape[0],
-                    batch_seq_len,
-                    int(remaining_time // 60))
+            log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
+                epoch + 1,
+                args.epochs,
+                processed_dataset_samples,
+                total_samples,
+                step,
+                loss.item() * args.accumulation_steps,
+                optimizer.param_groups[-1]['lr'],
+                batch["input_ids"].shape[0],
+                batch_seq_len,
+                int(remaining_time // 60))
 
             Logger(log_msg)
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
-                log_dict = {
+                wandb.log({
                     "loss": loss.item() * args.accumulation_steps,
                     "lr": optimizer.param_groups[-1]['lr'],
                     "epoch_Time": spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60
-                }
-                if args.sep_loss:
-                    log_dict["main_loss"] = main_loss.item()
-                    log_dict["sep_loss"] = sep_loss_val.item()
-                wandb.log(log_dict)
+                })
 
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             model.eval()
@@ -338,11 +222,6 @@ if __name__ == "__main__":
     parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
     parser.add_argument("--fpe_max_positions", type=int, default=512, help="Fourier PE最大位置数（branch数量一般很小，默认512）")
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
-    # 分支分离损失参数
-    parser.add_argument("--sep_loss", action="store_true",
-                        help="使用分支分离损失：让同一时间步的不同branch预测向量远离，避免branch混淆（默认：标准独立token损失）")
-    parser.add_argument("--sep_weight", type=float, default=0.1,
-                        help="分支分离损失的权重（默认：0.1）")
     args = parser.parse_args()
 
     # 声明全局变量

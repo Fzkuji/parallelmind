@@ -391,10 +391,15 @@ python parallel_generate.py \
 **核心区别**：
 - **Branch维度**：Fourier位置编码（绝对编码，直接加在embedding上）
 - **Time维度**：标准1D RoPE（相对位置编码）
+- **Labels修复**：**重要！** 修复了关键bug，每个token现在预测同一branch的下一个token，而不是其他branch的token
+  - 旧实现（错误）：简单shift=1，导致跨branch预测，引起内容混淆
+  - 新实现（正确）：per-branch labels，确保每个token只预测同branch的下一个时间步
+  - **必须使用修复后的代码重新训练**，旧模型会产生混乱/重复的输出
 - **优势**：
   - Branch区分度更高（31%相似度 vs RoPE 2D的93-99%）
   - 不需要大stride（使用直接索引0,1,2,3...）
   - 训练收敛更快，loss可降至1.5以下（RoPE 2D通常卡在2.5）
+  - Labels正确后，多branch生成不再混淆
 
 **阶段一：单branch循环训练（预热）**
 
@@ -455,39 +460,6 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --out_dir out/fpe_stage3 \
   --ddp
 ```
-
-**（可选）使用分支分离损失**
-
-如果发现不同branch生成的内容容易混淆，可以使用分支分离损失来强化区分：
-
-```bash
-torchrun --nproc_per_node 8 trainer/train_pretrain.py \
-  --pe fpe \
-  --sep_loss \
-  --sep_weight 0.1 \
-  --epochs 4 \
-  --batch_size 4 \
-  --batch_by_samples \
-  --max_branches_per_sample 4 \
-  --min_branches_per_sample 1 \
-  --max_total_tokens 0 \
-  --init_weight out/fpe_stage1/pretrain_512.pth \
-  --data_path dataset/pretrain_hq_split.jsonl \
-  --out_dir out/fpe_stage2_sep \
-  --ddp
-```
-
-**分支分离损失说明**：
-- `--sep_loss`：启用分支分离损失（默认关闭）
-- `--sep_weight 0.1`：分离损失的权重，可调整范围0.05-0.5
-- **工作原理**（对比损失）：
-  - 惩罚：如果branch A预测了branch B的正确token（且A、B的正确答案不同）
-  - 不惩罚：如果两个branch的正确答案本来就相同
-  - 智能区分："错误的混淆"vs"正确的相同"
-- **效果**：减少branch混淆，让每个branch生成更独特的内容
-- **日志输出**：训练时会显示 `main:X.XX sep:X.XX`
-  - `sep`表示预测其他branch正确token的平均概率
-  - `sep`值越低越好（理想值接近0）
 
 **推理测试**（Fourier PE模型）：
 
@@ -573,8 +545,6 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
 # 2. 阶段二：多branch训练（约2-4小时，8×GPU）
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe fpe \
-  --sep_loss \
-  --sep_weight 0.1 \
   --epochs 4 \
   --batch_size 4 \
   --batch_by_samples \
@@ -596,10 +566,9 @@ python parallel_generate.py \
 
 **关键参数总结**：
 - `--pe fpe`：使用Fourier PE（核心改进）
-- `--sep_loss --sep_weight 0.1`：使用分支分离损失（减少branch混淆）
 - `--branch_loop_all`：自动遍历所有branch slice（省时省力）
 - `--batch_by_samples`：按样本数batching（适合动态多branch）
-- `--streaming`：推理时单行滚动显示（简洁输出）
+- `--streaming`：推理时实时显示多branch生成进度
 
 </details>
 
