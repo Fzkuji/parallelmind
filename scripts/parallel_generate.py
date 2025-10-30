@@ -101,13 +101,23 @@ def apply_chat_template(tokenizer, text: str, enable_chat: bool) -> List[int]:
     """
     构造输入格式，需要和训练数据格式一致
 
-    训练数据格式: <|im_start|>问题内容<|im_end|>
-    所以推理时也应该用相同格式，只给问题部分，让模型生成回答
+    训练数据格式（apply_chat_template生成）:
+    <|im_start|>system
+    You are a helpful assistant<|im_end|>
+    <|im_start|>user
+    {问题}<|im_end|>
+    <|im_start|>assistant
+
+    推理时也应该用相同格式，让模型从assistant后开始生成
     """
     if enable_chat:
-        # 匹配训练格式: <|im_start|>用户问题<|im_end|>
-        # 注意：不包含回答部分，让模型自己生成
-        prompt_text = f"<|im_start|>{text}"
+        # 使用tokenizer的apply_chat_template来保证格式一致
+        history = [{"role": "user", "content": text}]
+        prompt_text = tokenizer.apply_chat_template(
+            history,
+            tokenize=False,
+            add_generation_prompt=True,  # 添加<|im_start|>assistant前缀
+        )
     else:
         # 不用模板，直接是纯文本
         prompt_text = text

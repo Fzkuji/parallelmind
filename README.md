@@ -470,27 +470,37 @@ python eval_model.py --model_mode 1 # 默认为0：测试pretrain模型效果，
 #### 4.1 列式并行推理脚本
 
 ```bash
-# 预训练模型 - 多branch并行推理
+# 预训练模型 - 多branch并行推理（不使用chat template）
 python scripts/parallel_generate.py \
   --mode pretrain \
   --prompts "为什么太阳东升西落" "请介绍下大语言模型" \
   --branches_per_sample 2 \
-  --model_path out/fpe_pretrain/pretrain_512.pth \
+  --model_path out/pretrain_512.pth \
   --streaming \
-  --pe fpe
+  --pe rope
+
+# SFT模型 - 多branch对话并行推理（使用chat template）
+python scripts/parallel_generate.py \
+  --prompts "请介绍一下你自己" "如何理解大语言模型？" "推荐几本好书" \
+  --branches_per_sample 3 \
+  --model_path out/full_sft_512.pth \
+  --chat_template \
+  --streaming \
+  --pe rope
 
 # 使用JSONL输入
 python scripts/parallel_generate.py \
   --mode pretrain \
   --branches_per_sample 4 \
   --prompts_file planner_inputs.jsonl \
-  --model_path out/fpe_pretrain/pretrain_512.pth
+  --model_path out/pretrain_512.pth
 ```
 
 **参数说明**：
-- `--mode pretrain`：预训练模式（不使用chat template）
+- `--mode pretrain`：预训练模式（不使用chat template，用于续写）
+- `--chat_template`：启用chat template（用于SFT模型对话）
 - `--streaming`：实时显示多branch生成进度
-- `--pe fpe`：指定位置编码类型（rope或fpe，也可自动检测）
+- `--pe rope/fpe`：指定位置编码类型（也可自动检测）
 - JSONL格式：`{"branches": ["branch-0","branch-1"]}` 或 `{"text": "branch-0||branch-1"}`
 
 ---
