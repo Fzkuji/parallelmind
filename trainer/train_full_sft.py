@@ -56,8 +56,9 @@ def train_epoch(epoch, wandb):
                 position_ids=batch["position_ids"],
                 pos2d=batch["pos2d"],
             )
-            logits = outputs.logits[:, :-1, :].contiguous()
-            labels = batch["labels"][:, 1:].contiguous()
+            # 使用collator构造的per-branch labels，无需shift
+            logits = outputs.logits.contiguous()
+            labels = batch["labels"].contiguous()
             loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
             if hasattr(outputs, "aux_loss"):
                 loss = loss + outputs.aux_loss
@@ -119,8 +120,14 @@ def init_model(lm_config):
 
     model = MiniMindForCausalLM(lm_config)
     model.resize_token_embeddings(vocab_size)
-    moe_path = '_moe' if lm_config.use_moe else ''
-    ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}.pth'
+
+    # 加载预训练权重
+    if args.init_weight:
+        ckp = args.init_weight
+    else:
+        moe_path = '_moe' if lm_config.use_moe else ''
+        ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}.pth'
+
     state_dict = torch.load(ckp, map_location=args.device)
     model.load_state_dict(state_dict, strict=False)
 
@@ -164,8 +171,12 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=4)
     parser.add_argument('--use_moe', default=False, type=bool)
+    parser.add_argument('--pe', type=str, default='rope', choices=['rope', 'fpe'],
+                        help='Position encoding: rope (RoPE 2D, branch_stride=128) or fpe (Fourier PE, branch_stride=1)')
     default_data_path = os.path.join(root_path, "dataset", "sft_512.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
+    parser.add_argument("--init_weight", type=str, default=None,
+                        help='Path to pretrained model checkpoint (e.g., out/pretrain_512.pth)')
 
     args = parser.parse_args()
 
@@ -211,11 +222,16 @@ if __name__ == "__main__":
 
     model, tokenizer = init_model(lm_config)
 
+    # 根据pe_type设置branch_stride
+    # FPE使用1, RoPE 2D使用128
+    branch_stride = 1 if args.pe == 'fpe' else 128
+
     train_ds = ParallelSFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     collator = ParallelSFTCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
         pad_to=args.max_seq_len,
+        branch_stride=branch_stride,
     )
     train_sampler = DistributedSampler(train_ds, drop_last=True) if ddp else None
     effective_batch_size = args.batch_size * args.branches_per_sample

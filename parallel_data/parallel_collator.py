@@ -177,11 +177,13 @@ class ParallelSFTCollator:
         branches_per_sample: int = 4,
         pad_to: Optional[int] = None,
         random_time_offset: bool = True,
+        branch_stride: int = 128,
     ) -> None:
         self.tokenizer = tokenizer
         self.branches_per_sample = max(1, branches_per_sample)
         self.pad_to = pad_to
         self.random_time_offset = random_time_offset
+        self.branch_stride = branch_stride
 
     def __call__(self, features: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         samples = []

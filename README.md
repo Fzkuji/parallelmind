@@ -306,22 +306,7 @@ print(torch.cuda.is_available())
 
 **3.1 预训练（学知识）**
 
-```bash
-python train_pretrain.py
-```
-
-```bash
-torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --batch_size 4  --epochs 2
-```
-
-<details>
-<summary>预训练流程示例（逐 branch → 动态多分支）</summary>
-
-以下命令默认在仓库根目录执行（若已 `cd trainer`，可去掉命令中的 `trainer/` 前缀）。
-
----
-
-### 方法1：RoPE 2D（Baseline）
+#### 方法1：RoPE 2D（Baseline）
 
 使用2D RoPE进行branch位置编码（需要较大stride来区分不同branch）。
 
@@ -330,10 +315,10 @@ torchrun --nproc_per_node 1   train_pretrain.py   --branches_per_sample 16  --ba
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe rope \
-  --epochs 20 \
+  --epochs 1 \
   --batch_size 4 \
   --batch_by_samples \
-  --max_branches_per_sample 32 \
+  --max_branches_per_sample 16 \
   --min_branches_per_sample 1 \
   --max_total_tokens 0 \
   --data_path dataset/pretrain_hq_split.jsonl \
@@ -354,13 +339,12 @@ python scripts/parallel_generate.py \
 ```
 
 **特点**：
+- **改动最小**：与原有MiniMind架构完全兼容
 - Branch stride=128（自动设置）
-- Branch区分度较低（93-99%相似度）
-- 训练收敛较慢，loss通常在2.5左右
+- 推荐用于快速验证和生产环境
 
----
 
-### 方法2：Fourier PE + 1D RoPE（推荐）
+#### 方法2：Fourier PE + 1D RoPE（实验性）
 
 使用Fourier位置编码区分branch，避免RoPE 2D的高相似度问题。
 
@@ -411,57 +395,44 @@ python scripts/parallel_generate.py \
   --pe fpe
 ```
 
----
-
-### 方法对比
-
-| 指标 | RoPE 2D (Baseline) | Fourier PE (推荐) |
-|------|-------------------|-------------------|
-| Branch相似度 | 93-99% (易混淆) | 31% (区分度高) |
-| Branch stride | 128 (大stride) | 1 (直接索引) |
-| 训练Loss | ~2.5 (难收敛) | <1.5 (易收敛) |
-| 生成质量 | 容易混淆/重复 | 稳定清晰 |
-
-**推荐**：优先使用Fourier PE，branch区分度高，训练效果更好
-
----
-
-### 快速开始（推荐流程）
-
-使用Fourier PE进行多branch并行训练：
-
-```bash
-# 1. 训练
-torchrun --nproc_per_node 8 trainer/train_pretrain.py \
-  --pe fpe \
-  --epochs 20 \
-  --batch_size 4 \
-  --batch_by_samples \
-  --max_branches_per_sample 4 \
-  --min_branches_per_sample 1 \
-  --data_path dataset/pretrain_hq_split.jsonl \
-  --out_dir out/fpe_pretrain \
-  --ddp
-
-# 2. 推理测试
-python scripts/parallel_generate.py \
-  --mode pretrain \
-  --prompts "为什么太阳东升西落" "请介绍下大语言模型" \
-  --branches_per_sample 2 \
-  --model_path out/fpe_pretrain/pretrain_512.pth \
-  --streaming
-```
-
-</details>
 
 > 执行预训练，得到 `pretrain_*.pth` 作为预训练的输出权重（其中*为模型的dimension，默认为512）
 
 
 **3.2 监督微调（学对话方式）**
 
+使用预训练模型进行监督微调，支持多branch并行训练：
+
 ```bash
-python train_full_sft.py
+# 单机多卡训练（推荐）
+torchrun --nproc_per_node 8 trainer/train_full_sft.py \
+  --epochs 2 \
+  --batch_size 4 \
+  --branches_per_sample 4 \
+  --max_seq_len 512 \
+  --pe rope \
+  --data_path dataset/sft_data.jsonl \
+  --init_weight out/pretrain_512.pth \
+  --out_dir out \
+  --ddp
+
+# 单卡训练
+python trainer/train_full_sft.py \
+  --epochs 2 \
+  --batch_size 4 \
+  --branches_per_sample 4 \
+  --max_seq_len 512 \
+  --pe rope \
+  --data_path dataset/sft_data.jsonl \
+  --init_weight out/pretrain_512.pth \
+  --out_dir out
 ```
+
+参数说明：
+- `--branches_per_sample`: 每个样本的并行分支数（4表示4个对话并行训练）
+- `--pe`: 位置编码方法（rope=RoPE 2D推荐，fpe=Fourier PE实验性）
+- `--init_weight`: 预训练模型路径
+- `--data_path`: SFT数据路径（JSONL格式，每行一个对话样本）
 
 > 执行监督微调，得到 `full_sft_*.pth` 作为指令微调的输出权重（其中`full`即为全参数微调）
 
