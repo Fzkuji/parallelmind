@@ -18,6 +18,9 @@ class ParallelPretrainDataset(Dataset):
         hf_split: str = "train",
         text_column: Optional[str] = None,
         max_samples: Optional[int] = None,
+        # 文本切分参数
+        chunk_length: Optional[int] = None,
+        tokenizer: Optional[AutoTokenizer] = None,
     ) -> None:
         super().__init__()
         self.data_path = data_path
@@ -27,6 +30,8 @@ class ParallelPretrainDataset(Dataset):
         self.slice_index = slice_index
         self.use_hf = hf_dataset is not None
         self.hf_data: List[Dict[str, str]] = []
+        self.chunk_length = chunk_length
+        self.tokenizer = tokenizer
 
         if self.use_hf:
             # 从 Hugging Face 加载数据
@@ -125,19 +130,63 @@ class ParallelPretrainDataset(Dataset):
 
         # 提取数据
         count = 0
+        total_chunks = 0
+        use_chunking = self.chunk_length is not None and self.tokenizer is not None
+
+        if use_chunking:
+            print(f"  启用文本切分: 每个片段最大 {self.chunk_length} tokens")
+
         for item in dataset:
             if max_samples and count >= max_samples:
                 break
 
             text_content = item.get(text_column, "")
             if isinstance(text_content, str) and text_content.strip():
-                self.hf_data.append({"text": text_content.strip()})
+                text = text_content.strip()
+
+                if use_chunking:
+                    # 切分长文本
+                    chunks = self._chunk_text(text)
+                    self.hf_data.extend([{"text": chunk} for chunk in chunks])
+                    total_chunks += len(chunks)
+                else:
+                    # 不切分，直接存储
+                    self.hf_data.append({"text": text})
+
                 count += 1
 
-                if count % 10000 == 0:
-                    print(f"  已加载 {count:,} 个样本...")
+                if count % 1000 == 0:
+                    if use_chunking:
+                        print(f"  已处理 {count:,} 个原始样本 -> {total_chunks:,} 个片段...")
+                    else:
+                        print(f"  已加载 {count:,} 个样本...")
 
-        print(f"✓ 从 Hugging Face 加载完成: {len(self.hf_data):,} 个样本")
+        if use_chunking:
+            print(f"✓ 从 Hugging Face 加载完成: {count:,} 个原始样本 -> {len(self.hf_data):,} 个切分片段")
+        else:
+            print(f"✓ 从 Hugging Face 加载完成: {len(self.hf_data):,} 个样本")
+
+    def _chunk_text(self, text: str) -> List[str]:
+        """将长文本切分成多个固定长度的片段"""
+        if not self.tokenizer or not self.chunk_length:
+            return [text]
+
+        # Tokenize 整个文本
+        tokens = self.tokenizer.encode(text, add_special_tokens=False)
+
+        # 如果文本短于 chunk_length，直接返回
+        if len(tokens) <= self.chunk_length:
+            return [text]
+
+        # 切分成多个 chunks
+        chunks = []
+        for i in range(0, len(tokens), self.chunk_length):
+            chunk_tokens = tokens[i:i + self.chunk_length]
+            chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+            if chunk_text.strip():  # 只保留非空片段
+                chunks.append(chunk_text.strip())
+
+        return chunks
 
     def __len__(self) -> int:
         return len(self.hf_data) if self.use_hf else len(self.offsets)

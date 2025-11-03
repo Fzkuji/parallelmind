@@ -218,6 +218,7 @@ if __name__ == "__main__":
     parser.add_argument("--hf-split", type=str, default="train", help="HF数据集分割（默认: train）")
     parser.add_argument("--text-column", type=str, default=None, help="HF数据集文本列名（默认自动检测）")
     parser.add_argument("--max-samples", type=int, default=None, help="限制HF数据集样本数量")
+    parser.add_argument("--chunk-length", type=int, default=None, help="HF数据集文本切分长度（tokens），用于将长文本切成多个片段，充分利用数据")
 
     parser.add_argument("--max_total_tokens", type=int, default=4096)
     parser.add_argument("--init_weight", type=str, default=None, help="Warm-start from an existing checkpoint (path to pretrain_*.pth)")
@@ -365,6 +366,8 @@ if __name__ == "__main__":
                 hf_split=getattr(args, 'hf_split', 'train'),
                 text_column=getattr(args, 'text_column', None),
                 max_samples=getattr(args, 'max_samples', None),
+                chunk_length=getattr(args, 'chunk_length', None),
+                tokenizer=tokenizer if getattr(args, 'chunk_length', None) else None,
                 **dataset_kwargs
             )
         else:

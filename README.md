@@ -396,10 +396,12 @@ python scripts/convert_dataset.py --input sharegpt.json --output dataset/custom_
 
 ```bash
 # 示例：使用 FineWeb-Edu 数据集
+# FineWeb-Edu 的文本通常很长，使用 --chunk-length 自动切分成合适长度的片段
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --hf-dataset HuggingFaceFW/fineweb-edu \
   --hf-subset sample-10BT \
   --max-samples 100000 \
+  --chunk-length 512 \
   --pe rope \
   --epochs 1 \
   --batch_size 4 \
@@ -410,6 +412,14 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --out_dir out/rope_pretrain \
   --ddp
 ```
+
+**HF数据集参数说明**：
+- `--hf-dataset`: Hugging Face数据集名称（必需）
+- `--hf-subset`: 数据集子集名称（可选，某些数据集需要）
+- `--hf-split`: 数据集分割，默认"train"
+- `--text-column`: 文本列名（可选，自动检测）
+- `--max-samples`: 限制样本数量（可选，用于快速测试）
+- `--chunk-length`: **重要！** 文本切分长度（tokens）。对于 FineWeb-Edu 等长文本数据集，建议设置为 512 或 1024，会自动将长文本切分成多个片段，充分利用数据，避免浪费
 
 **方式B：使用本地JSONL文件**：
 
