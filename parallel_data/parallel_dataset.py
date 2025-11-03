@@ -171,8 +171,11 @@ class ParallelPretrainDataset(Dataset):
         if not self.tokenizer or not self.chunk_length:
             return [text]
 
-        # Tokenize 整个文本
-        tokens = self.tokenizer.encode(text, add_special_tokens=False)
+        # Tokenize 整个文本（抑制超长警告，因为我们会切分）
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Token indices sequence length")
+            tokens = self.tokenizer.encode(text, add_special_tokens=False)
 
         # 如果文本短于 chunk_length，直接返回
         if len(tokens) <= self.chunk_length:
@@ -416,6 +419,10 @@ class ParallelPretrainIterableDataset(IterableDataset):
                 print(f"  子集: {hf_subset}")
             if chunk_length:
                 print(f"  文本切分: 每个片段最大 {chunk_length} tokens")
+            else:
+                print(f"  警告：未设置 chunk_length，长文本不会被切分！")
+            if not tokenizer:
+                print(f"  警告：未传递 tokenizer，文本切分功能将被禁用！")
 
     def _is_main_process(self) -> bool:
         """检查是否为主进程"""
@@ -430,8 +437,11 @@ class ParallelPretrainIterableDataset(IterableDataset):
         if not self.tokenizer or not self.chunk_length:
             return [text]
 
-        # Tokenize 整个文本
-        tokens = self.tokenizer.encode(text, add_special_tokens=False)
+        # Tokenize 整个文本（抑制超长警告，因为我们会切分）
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Token indices sequence length")
+            tokens = self.tokenizer.encode(text, add_special_tokens=False)
 
         # 如果文本短于 chunk_length，直接返回
         if len(tokens) <= self.chunk_length:
