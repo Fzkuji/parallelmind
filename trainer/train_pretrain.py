@@ -211,6 +211,14 @@ if __name__ == "__main__":
     parser.add_argument('--use_moe', default=False, type=bool)
     default_data_path = os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
+
+    # Hugging Face 数据集参数
+    parser.add_argument("--hf-dataset", type=str, default=None, help="Hugging Face数据集名称，如 'HuggingFaceFW/fineweb-edu'")
+    parser.add_argument("--hf-subset", type=str, default=None, help="HF数据集子集名称，如 'sample-10BT'")
+    parser.add_argument("--hf-split", type=str, default="train", help="HF数据集分割（默认: train）")
+    parser.add_argument("--text-column", type=str, default=None, help="HF数据集文本列名（默认自动检测）")
+    parser.add_argument("--max-samples", type=int, default=None, help="限制HF数据集样本数量")
+
     parser.add_argument("--max_total_tokens", type=int, default=4096)
     parser.add_argument("--init_weight", type=str, default=None, help="Warm-start from an existing checkpoint (path to pretrain_*.pth)")
     parser.add_argument("--branch_slice_count", type=int, default=None, help="Divide dataset into N slices (e.g., branch dimension count)")
@@ -348,7 +356,20 @@ if __name__ == "__main__":
             slice_desc = f"{slice_idx + 1}/{args.branch_slice_count}"
             Logger(f"=== 开始训练 branch slice {slice_desc} ===")
 
-        train_ds = ParallelPretrainDataset(args.data_path, **dataset_kwargs)
+        # 根据是否提供了 HF 参数来初始化数据集
+        if getattr(args, 'hf_dataset', None):
+            # 从 Hugging Face 加载
+            train_ds = ParallelPretrainDataset(
+                hf_dataset=args.hf_dataset,
+                hf_subset=getattr(args, 'hf_subset', None),
+                hf_split=getattr(args, 'hf_split', 'train'),
+                text_column=getattr(args, 'text_column', None),
+                max_samples=getattr(args, 'max_samples', None),
+                **dataset_kwargs
+            )
+        else:
+            # 从本地文件加载
+            train_ds = ParallelPretrainDataset(args.data_path, **dataset_kwargs)
         collator._buffer.clear()
         drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
         train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None

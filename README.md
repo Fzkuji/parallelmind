@@ -388,11 +388,30 @@ python scripts/convert_dataset.py --input sharegpt.json --output dataset/custom_
 
 **3.1 预训练（学知识）**
 
-#### 方法1：RoPE 2D（Baseline）
+#### 方法1：RoPE 2D（推荐）
 
 使用2D RoPE进行branch位置编码（需要较大stride来区分不同branch）。
 
-**训练命令**：
+**方式A：直接从 Hugging Face 训练（推荐！无需下载数据）**：
+
+```bash
+# 示例：使用 FineWeb-Edu 数据集
+torchrun --nproc_per_node 8 trainer/train_pretrain.py \
+  --hf-dataset HuggingFaceFW/fineweb-edu \
+  --hf-subset sample-10BT \
+  --max-samples 100000 \
+  --pe rope \
+  --epochs 1 \
+  --batch_size 4 \
+  --batch_by_samples \
+  --max_branches_per_sample 16 \
+  --min_branches_per_sample 1 \
+  --max_total_tokens 0 \
+  --out_dir out/rope_pretrain \
+  --ddp
+```
+
+**方式B：使用本地JSONL文件**：
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
@@ -483,7 +502,39 @@ python scripts/parallel_generate.py \
 
 **3.2 监督微调（学对话方式）**
 
-使用预训练模型进行监督微调，支持多branch并行训练：
+使用预训练模型进行监督微调，支持多branch并行训练。
+
+**方式A：直接从 Hugging Face 训练（推荐！无需下载数据）**：
+
+```bash
+# 单机多卡训练（推荐）
+# 示例：使用 tatsu-lab/alpaca 数据集
+torchrun --nproc_per_node 8 trainer/train_full_sft.py \
+  --hf-dataset tatsu-lab/alpaca \
+  --max-samples 10000 \
+  --epochs 2 \
+  --batch_size 4 \
+  --max_branches_per_sample 8 \
+  --min_branches_per_sample 1 \
+  --max_seq_len 512 \
+  --pe rope \
+  --init_weight out/pretrain_512.pth \
+  --out_dir out \
+  --ddp
+
+# 其他常用 SFT 数据集示例：
+# --hf-dataset BelleGroup/train_2M_CN  # 中文对话数据
+# --hf-dataset Open-Orca/OpenOrca     # 高质量指令数据
+# --hf-dataset HuggingFaceH4/ultrachat_200k  # 多轮对话数据
+```
+
+**HF数据集参数说明**：
+- `--hf-dataset`: Hugging Face数据集名称（必需）
+- `--hf-subset`: 数据集子集名称（可选，某些数据集需要）
+- `--hf-split`: 数据集分割，默认"train"
+- `--max-samples`: 限制样本数量（可选，用于快速测试）
+
+**方式B：使用本地JSONL文件**：
 
 ```bash
 # 单机多卡训练（推荐）
@@ -512,12 +563,12 @@ python trainer/train_full_sft.py \
   --out_dir out
 ```
 
-参数说明：
+**通用参数说明**：
 - `--max_branches_per_sample`: 每个样本的最大并行分支数（启用动态branch模式）
 - `--min_branches_per_sample`: 每个样本的最小并行分支数（默认1）
 - `--pe`: 位置编码方法（rope=RoPE 2D推荐，fpe=Fourier PE实验性）
 - `--init_weight`: 预训练模型路径
-- `--data_path`: SFT数据路径（JSONL格式，每行一个对话样本）
+- `--data_path`: 本地SFT数据路径（JSONL格式，每行一个对话样本）
 
 > 执行监督微调，得到 `full_sft_*.pth` 作为指令微调的输出权重（其中`full`即为全参数微调）
 

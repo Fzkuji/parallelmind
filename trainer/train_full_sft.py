@@ -179,6 +179,13 @@ if __name__ == "__main__":
                         help='Position encoding: rope (RoPE 2D, branch_stride=128) or fpe (Fourier PE, branch_stride=1)')
     default_data_path = os.path.join(root_path, "dataset", "sft_512.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
+
+    # Hugging Face 数据集参数
+    parser.add_argument("--hf-dataset", type=str, default=None, help="Hugging Face数据集名称")
+    parser.add_argument("--hf-subset", type=str, default=None, help="HF数据集子集名称")
+    parser.add_argument("--hf-split", type=str, default="train", help="HF数据集分割（默认: train）")
+    parser.add_argument("--max-samples", type=int, default=None, help="限制HF数据集样本数量")
+
     parser.add_argument("--init_weight", type=str, default=None,
                         help='Path to pretrained model checkpoint (e.g., out/pretrain_512.pth)')
 
@@ -230,7 +237,20 @@ if __name__ == "__main__":
     # FPE使用1, RoPE 2D使用128
     branch_stride = 1 if args.pe == 'fpe' else 128
 
-    train_ds = ParallelSFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
+    # 根据是否提供了 HF 参数来初始化数据集
+    if getattr(args, 'hf_dataset', None):
+        # 从 Hugging Face 加载
+        train_ds = ParallelSFTDataset(
+            tokenizer=tokenizer,
+            max_length=args.max_seq_len,
+            hf_dataset=args.hf_dataset,
+            hf_subset=getattr(args, 'hf_subset', None),
+            hf_split=getattr(args, 'hf_split', 'train'),
+            max_samples=getattr(args, 'max_samples', None),
+        )
+    else:
+        # 从本地文件加载
+        train_ds = ParallelSFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     collator = ParallelSFTCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
