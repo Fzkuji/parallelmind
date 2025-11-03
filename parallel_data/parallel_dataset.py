@@ -171,11 +171,16 @@ class ParallelPretrainDataset(Dataset):
         if not self.tokenizer or not self.chunk_length:
             return [text]
 
-        # Tokenize 整个文本（抑制超长警告，因为我们会切分）
-        import warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Token indices sequence length")
+        # Tokenize 整个文本（临时抑制超长警告，因为我们会切分）
+        import logging
+        transformers_logger = logging.getLogger("transformers.tokenization_utils_base")
+        old_level = transformers_logger.level
+        transformers_logger.setLevel(logging.ERROR)
+
+        try:
             tokens = self.tokenizer.encode(text, add_special_tokens=False)
+        finally:
+            transformers_logger.setLevel(old_level)
 
         # 如果文本短于 chunk_length，直接返回
         if len(tokens) <= self.chunk_length:
@@ -437,11 +442,16 @@ class ParallelPretrainIterableDataset(IterableDataset):
         if not self.tokenizer or not self.chunk_length:
             return [text]
 
-        # Tokenize 整个文本（抑制超长警告，因为我们会切分）
-        import warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Token indices sequence length")
+        # Tokenize 整个文本（临时抑制超长警告，因为我们会切分）
+        import logging
+        transformers_logger = logging.getLogger("transformers.tokenization_utils_base")
+        old_level = transformers_logger.level
+        transformers_logger.setLevel(logging.ERROR)
+
+        try:
             tokens = self.tokenizer.encode(text, add_special_tokens=False)
+        finally:
+            transformers_logger.setLevel(old_level)
 
         # 如果文本短于 chunk_length，直接返回
         if len(tokens) <= self.chunk_length:
