@@ -493,8 +493,11 @@ class ParallelPretrainIterableDataset(IterableDataset):
                     streaming=True
                 )
 
-        # 处理 DDP 多进程：每个进程只处理部分数据
+        # 计算当前 worker 的分片参数
         worker_info = torch.utils.data.get_worker_info()
+        num_shards = 1
+        shard_id = 0
+
         if torch.distributed.is_initialized():
             # DDP: 每个 rank 处理不同的数据
             rank = torch.distributed.get_rank()
@@ -505,19 +508,26 @@ class ParallelPretrainIterableDataset(IterableDataset):
                 num_workers = worker_info.num_workers
                 worker_id = worker_info.id
                 # 总进程数 = world_size * num_workers
-                total_workers = world_size * num_workers
-                global_worker_id = rank * num_workers + worker_id
-                dataset = dataset.shard(num_shards=total_workers, index=global_worker_id)
+                num_shards = world_size * num_workers
+                shard_id = rank * num_workers + worker_id
             else:
                 # 只有 DDP，没有 DataLoader workers
-                dataset = dataset.shard(num_shards=world_size, index=rank)
+                num_shards = world_size
+                shard_id = rank
         elif worker_info is not None:
             # 只有 DataLoader workers，没有 DDP
-            dataset = dataset.shard(num_shards=worker_info.num_workers, index=worker_info.id)
+            num_shards = worker_info.num_workers
+            shard_id = worker_info.id
 
-        # 迭代数据并动态切分
+        # 迭代数据并手动分片 + 动态切分
         count = 0
+        global_idx = 0  # 全局样本索引
         for item in dataset:
+            # 手动分片：只处理属于当前 shard 的样本
+            if global_idx % num_shards != shard_id:
+                global_idx += 1
+                continue
+
             if self.max_samples and count >= self.max_samples:
                 break
 
@@ -534,3 +544,5 @@ class ParallelPretrainIterableDataset(IterableDataset):
                     yield {"text": text}
 
                 count += 1
+
+            global_idx += 1
