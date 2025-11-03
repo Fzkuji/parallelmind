@@ -300,6 +300,88 @@ print(torch.cuda.is_available())
 
 </details>
 
+**2.1 使用自定义数据集**
+
+如果你有自己的数据集，可以使用转换脚本自动转换为训练所需的JSONL格式：
+
+#### 方式1：直接使用 Hugging Face 数据集（推荐！）
+
+无需下载，一行命令直接转换Hugging Face上的任何数据集：
+
+```bash
+# 示例1: FineWeb-Edu 数据集（高质量网页文本）
+python scripts/convert_dataset.py \
+  --hf-dataset HuggingFaceFW/fineweb-edu \
+  --hf-subset sample-10BT \
+  --hf-split train \
+  --output dataset/fineweb_pretrain.jsonl \
+  --mode pretrain \
+  --max-samples 100000
+
+# 示例2: Alpaca 指令数据集
+python scripts/convert_dataset.py \
+  --hf-dataset tatsu-lab/alpaca \
+  --output dataset/alpaca_sft.jsonl \
+  --mode sft \
+  --format alpaca
+
+# 示例3: 中文对话数据集
+python scripts/convert_dataset.py \
+  --hf-dataset BelleGroup/train_2M_CN \
+  --output dataset/belle_sft.jsonl \
+  --mode sft \
+  --max-samples 50000
+```
+
+**参数说明**：
+- `--hf-dataset`: Hugging Face数据集名称（必需）
+- `--hf-subset`: 子集名称（如果数据集有多个子集）
+- `--hf-split`: 数据分割，默认"train"（可选：test, validation等）
+- `--text-column`: 文本列名（默认自动检测）
+- `--max-samples`: 限制样本数量（推荐先用小量测试）
+
+**优势**：
+- ✅ 无需手动下载数据文件
+- ✅ 自动处理streaming加载（节省内存）
+- ✅ 支持几乎所有HF数据集
+- ✅ 自动检测文本字段
+
+**首次使用需要安装datasets库**：
+```bash
+pip install datasets
+```
+
+#### 方式2：使用本地文件
+
+```bash
+# 预训练 - 纯文本文件（每行一个样本）
+python scripts/convert_dataset.py --input your_data.txt --output dataset/custom_pretrain.jsonl --mode pretrain
+
+# 预训练 - CSV文件（自动检测文本列）
+python scripts/convert_dataset.py --input your_data.csv --output dataset/custom_pretrain.jsonl --mode pretrain
+
+# SFT - Alpaca格式JSON
+python scripts/convert_dataset.py --input alpaca.json --output dataset/custom_sft.jsonl --mode sft --format alpaca
+
+# SFT - ShareGPT格式
+python scripts/convert_dataset.py --input sharegpt.json --output dataset/custom_sft.jsonl --mode sft --format sharegpt
+```
+
+**支持的输入格式**：
+- **Pretrain**: 纯文本(.txt)、CSV(.csv)、JSON/JSONL（任何包含文本的格式）
+- **SFT**:
+  - Standard格式: `{"conversations": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}`
+  - Alpaca格式: `{"instruction": "...", "input": "...", "output": "..."}`
+  - ShareGPT格式: `{"conversations": [{"from": "human", "value": "..."}, {"from": "gpt", "value": "..."}]}`
+  - OpenAI格式: `{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}`
+  - 简单格式: `{"prompt": "...", "response": "..."}`
+
+**输出格式**：
+- **Pretrain**: `{"text": "文本内容"}`
+- **SFT**: `{"conversations": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}`
+
+转换完成后，使用 `--data_path` 参数指定你的数据文件即可训练。
+
 ### 3.开始训练
 
 目录位于`trainer`
