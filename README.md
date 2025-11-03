@@ -405,6 +405,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe rope \
   --epochs 1 \
   --batch_size 4 \
+  --accumulation_steps 1 \
   --batch_by_samples \
   --max_branches_per_sample 16 \
   --min_branches_per_sample 1 \
@@ -428,6 +429,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe rope \
   --epochs 1 \
   --batch_size 4 \
+  --accumulation_steps 1 \
   --batch_by_samples \
   --max_branches_per_sample 16 \
   --min_branches_per_sample 1 \
@@ -479,6 +481,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe fpe \
   --epochs 1 \
   --batch_size 4 \
+  --accumulation_steps 1 \
   --batch_by_samples \
   --max_branches_per_sample 4 \
   --min_branches_per_sample 1 \
@@ -524,6 +527,7 @@ torchrun --nproc_per_node 8 trainer/train_full_sft.py \
   --max-samples 10000 \
   --epochs 2 \
   --batch_size 4 \
+  --accumulation_steps 1 \
   --max_branches_per_sample 8 \
   --min_branches_per_sample 1 \
   --max_seq_len 512 \
@@ -551,6 +555,7 @@ torchrun --nproc_per_node 8 trainer/train_full_sft.py \
 torchrun --nproc_per_node 8 trainer/train_full_sft.py \
   --epochs 2 \
   --batch_size 4 \
+  --accumulation_steps 1 \
   --max_branches_per_sample 8 \
   --min_branches_per_sample 1 \
   --max_seq_len 512 \
@@ -564,6 +569,7 @@ torchrun --nproc_per_node 8 trainer/train_full_sft.py \
 python trainer/train_full_sft.py \
   --epochs 1 \
   --batch_size 16 \
+  --accumulation_steps 1 \
   --max_branches_per_sample 8 \
   --min_branches_per_sample 1 \
   --max_seq_len 512 \
@@ -579,6 +585,7 @@ python trainer/train_full_sft.py \
 - `--pe`: 位置编码方法（rope=RoPE 2D推荐，fpe=Fourier PE实验性）
 - `--init_weight`: 预训练模型路径
 - `--data_path`: 本地SFT数据路径（JSONL格式，每行一个对话样本）
+- `--accumulation_steps`: 梯度累积步数（默认1）。设置为N表示累积N个batch后才更新参数，相当于将有效batch_size放大N倍。例如：batch_size=4 + accumulation_steps=2 = 有效batch_size为8
 
 > 执行监督微调，得到 `full_sft_*.pth` 作为指令微调的输出权重（其中`full`即为全参数微调）
 
