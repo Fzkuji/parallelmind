@@ -1,8 +1,8 @@
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Iterator
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 from transformers import AutoTokenizer
 
 
@@ -381,3 +381,156 @@ class ParallelSFTDataset(Dataset):
                 start = idx + len(bos)
                 return start
         return 0
+
+
+class ParallelPretrainIterableDataset(IterableDataset):
+    """
+    真正的 streaming 数据集，用于 Hugging Face 数据集
+    - 不预加载所有数据到内存
+    - 训练时按需加载和切分文本
+    - 适合大规模数据集（如 FineWeb-Edu）
+    """
+    def __init__(
+        self,
+        hf_dataset: str,
+        hf_subset: Optional[str] = None,
+        hf_split: str = "train",
+        text_column: Optional[str] = None,
+        max_samples: Optional[int] = None,
+        chunk_length: Optional[int] = None,
+        tokenizer: Optional[AutoTokenizer] = None,
+    ) -> None:
+        super().__init__()
+        self.hf_dataset = hf_dataset
+        self.hf_subset = hf_subset
+        self.hf_split = hf_split
+        self.text_column = text_column
+        self.max_samples = max_samples
+        self.chunk_length = chunk_length
+        self.tokenizer = tokenizer
+
+        # 只在主进程打印初始化信息
+        if self._is_main_process():
+            print(f"初始化 Streaming 数据集: {hf_dataset}")
+            if hf_subset:
+                print(f"  子集: {hf_subset}")
+            if chunk_length:
+                print(f"  文本切分: 每个片段最大 {chunk_length} tokens")
+
+    def _is_main_process(self) -> bool:
+        """检查是否为主进程"""
+        if not torch.distributed.is_available():
+            return True
+        if not torch.distributed.is_initialized():
+            return True
+        return torch.distributed.get_rank() == 0
+
+    def _chunk_text(self, text: str) -> List[str]:
+        """将长文本切分成多个固定长度的片段"""
+        if not self.tokenizer or not self.chunk_length:
+            return [text]
+
+        # Tokenize 整个文本
+        tokens = self.tokenizer.encode(text, add_special_tokens=False)
+
+        # 如果文本短于 chunk_length，直接返回
+        if len(tokens) <= self.chunk_length:
+            return [text]
+
+        # 切分成多个 chunks
+        chunks = []
+        for i in range(0, len(tokens), self.chunk_length):
+            chunk_tokens = tokens[i:i + self.chunk_length]
+            chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+            if chunk_text.strip():
+                chunks.append(chunk_text.strip())
+
+        return chunks
+
+    def __iter__(self) -> Iterator[Dict[str, str]]:
+        """迭代器：按需加载和处理数据"""
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            raise ImportError("需要安装 datasets 库: pip install datasets")
+
+        # 加载 streaming 数据集
+        if self.hf_subset:
+            dataset = load_dataset(
+                self.hf_dataset,
+                self.hf_subset,
+                split=self.hf_split,
+                streaming=True
+            )
+        else:
+            dataset = load_dataset(
+                self.hf_dataset,
+                split=self.hf_split,
+                streaming=True
+            )
+
+        # 自动检测文本列（只在第一个样本上检测）
+        if self.text_column is None:
+            first_item = next(iter(dataset))
+            available_columns = list(first_item.keys())
+            possible_columns = ['text', 'content', 'document', 'sentence', 'data']
+            self.text_column = next(
+                (col for col in possible_columns if col in available_columns),
+                available_columns[0]
+            )
+            # 重新创建迭代器
+            if self.hf_subset:
+                dataset = load_dataset(
+                    self.hf_dataset,
+                    self.hf_subset,
+                    split=self.hf_split,
+                    streaming=True
+                )
+            else:
+                dataset = load_dataset(
+                    self.hf_dataset,
+                    split=self.hf_split,
+                    streaming=True
+                )
+
+        # 处理 DDP 多进程：每个进程只处理部分数据
+        worker_info = torch.utils.data.get_worker_info()
+        if torch.distributed.is_initialized():
+            # DDP: 每个 rank 处理不同的数据
+            rank = torch.distributed.get_rank()
+            world_size = torch.distributed.get_world_size()
+
+            if worker_info is not None:
+                # DDP + DataLoader workers
+                num_workers = worker_info.num_workers
+                worker_id = worker_info.id
+                # 总进程数 = world_size * num_workers
+                total_workers = world_size * num_workers
+                global_worker_id = rank * num_workers + worker_id
+                dataset = dataset.shard(num_shards=total_workers, index=global_worker_id)
+            else:
+                # 只有 DDP，没有 DataLoader workers
+                dataset = dataset.shard(num_shards=world_size, index=rank)
+        elif worker_info is not None:
+            # 只有 DataLoader workers，没有 DDP
+            dataset = dataset.shard(num_shards=worker_info.num_workers, index=worker_info.id)
+
+        # 迭代数据并动态切分
+        count = 0
+        for item in dataset:
+            if self.max_samples and count >= self.max_samples:
+                break
+
+            text_content = item.get(self.text_column, "")
+            if isinstance(text_content, str) and text_content.strip():
+                text = text_content.strip()
+
+                # 动态切分文本
+                if self.chunk_length and self.tokenizer:
+                    chunks = self._chunk_text(text)
+                    for chunk in chunks:
+                        yield {"text": chunk}
+                else:
+                    yield {"text": text}
+
+                count += 1

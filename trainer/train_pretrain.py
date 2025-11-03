@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from contextlib import nullcontext
 from transformers import AutoTokenizer
 from parallel.columnar import build_columnar_causal_mask
-from parallel_data.parallel_dataset import ParallelPretrainDataset
+from parallel_data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
 from parallel_data.parallel_collator import ParallelPretrainCollator
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 
@@ -53,7 +53,22 @@ def train_epoch(epoch, wandb):
         batch_dataset_samples = int(branch_counts.sum().item())  # 这个 batch 使用的原始文本数
         processed_dataset_samples += batch_dataset_samples
 
-        lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
+        # 计算学习率（streaming 模式下估算总步数）
+        if iter_per_epoch is not None:
+            current_step = epoch * iter_per_epoch + step
+            total_steps = args.epochs * iter_per_epoch
+        else:
+            # IterableDataset: 估算步数（假设每个 epoch 大约相同步数）
+            # 第一个 epoch 无法估算，使用简单的步数
+            current_step = step
+            # 估算总步数：如果 max_samples 提供了，可以粗略估算
+            if args.max_samples:
+                estimated_iter = args.max_samples // effective_batch_size
+                total_steps = estimated_iter * args.epochs
+            else:
+                total_steps = 10000 * args.epochs  # 默认估算值
+
+        lr = get_lr(current_step, total_steps, args.learning_rate)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
@@ -92,19 +107,24 @@ def train_epoch(epoch, wandb):
             # 计算实际的 batch 信息
             batch_seq_len = batch["input_ids"].shape[1]
             # 估算剩余时间（基于已处理的原始文本比例）
-            progress_ratio = processed_dataset_samples / total_samples if total_samples > 0 else 0
-            if progress_ratio > 0:
-                estimated_total_time = spend_time / progress_ratio
-                remaining_time = estimated_total_time - spend_time
+            if total_samples != float('inf') and total_samples > 0:
+                progress_ratio = processed_dataset_samples / total_samples
+                if progress_ratio > 0:
+                    estimated_total_time = spend_time / progress_ratio
+                    remaining_time = estimated_total_time - spend_time
+                else:
+                    remaining_time = 0
             else:
+                # streaming 模式：无法准确估算剩余时间
                 remaining_time = 0
 
             # 构建日志信息
+            total_samples_str = str(int(total_samples)) if total_samples != float('inf') else 'streaming'
             log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
                 epoch + 1,
                 args.epochs,
                 processed_dataset_samples,
-                total_samples,
+                total_samples_str,
                 step,
                 loss.item() * args.accumulation_steps,
                 optimizer.param_groups[-1]['lr'],
@@ -115,10 +135,17 @@ def train_epoch(epoch, wandb):
             Logger(log_msg)
 
             if (wandb is not None) and (not ddp or dist.get_rank() == 0):
+                # 计算预估的 epoch 时间
+                if iter_per_epoch is not None:
+                    estimated_epoch_time = spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60
+                else:
+                    # streaming 模式：无法准确估算，使用已用时间
+                    estimated_epoch_time = spend_time // 60
+
                 wandb.log({
                     "loss": loss.item() * args.accumulation_steps,
                     "lr": optimizer.param_groups[-1]['lr'],
-                    "epoch_Time": spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60
+                    "epoch_Time": estimated_epoch_time
                 })
 
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
@@ -359,8 +386,8 @@ if __name__ == "__main__":
 
         # 根据是否提供了 HF 参数来初始化数据集
         if getattr(args, 'hf_dataset', None):
-            # 从 Hugging Face 加载
-            train_ds = ParallelPretrainDataset(
+            # 从 Hugging Face 加载 - 使用 IterableDataset 真正的 streaming
+            train_ds = ParallelPretrainIterableDataset(
                 hf_dataset=args.hf_dataset,
                 hf_subset=getattr(args, 'hf_subset', None),
                 hf_split=getattr(args, 'hf_split', 'train'),
@@ -368,31 +395,47 @@ if __name__ == "__main__":
                 max_samples=getattr(args, 'max_samples', None),
                 chunk_length=getattr(args, 'chunk_length', None),
                 tokenizer=tokenizer if getattr(args, 'chunk_length', None) else None,
-                **dataset_kwargs
             )
+            is_iterable = True
         else:
-            # 从本地文件加载
+            # 从本地文件加载 - 使用普通 Dataset
             train_ds = ParallelPretrainDataset(args.data_path, **dataset_kwargs)
+            is_iterable = False
+
         collator._buffer.clear()
         drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
-        train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
+
+        # IterableDataset 不支持 sampler（内部已处理 DDP 分片）
+        if is_iterable:
+            train_sampler = None
+            shuffle = False
+        else:
+            train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
+            shuffle = (train_sampler is None)
+
         train_loader = DataLoader(
             train_ds,
             batch_size=effective_batch_size,
             pin_memory=True,
             drop_last=drop_last,
-            shuffle=(train_sampler is None),  # 只有在没有sampler时才shuffle
+            shuffle=shuffle,
             num_workers=args.num_workers,
             sampler=train_sampler,
             collate_fn=collator,
         )
 
-        total_samples = len(train_ds)
-        iter_per_epoch = len(train_loader)
-
-        if iter_per_epoch == 0:
-            Logger("当前切片没有样本，跳过。")
-            continue
+        # IterableDataset 没有长度，只能在训练时统计
+        if is_iterable:
+            total_samples = args.max_samples if args.max_samples else float('inf')
+            iter_per_epoch = None  # 未知，训练时动态计算
+            if ddp_local_rank == 0:
+                Logger(f"开始训练（streaming 模式，数据集大小未知）")
+        else:
+            total_samples = len(train_ds)
+            iter_per_epoch = len(train_loader)
+            if iter_per_epoch == 0:
+                Logger("当前切片没有样本，跳过。")
+                continue
 
         for epoch in range(args.epochs):
             train_epoch(epoch, wandb)
