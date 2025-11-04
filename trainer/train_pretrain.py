@@ -101,6 +101,9 @@ def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
     processed_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数 = branches 数量）
+    # 在一次optimizer step窗口内累计统计（用于按优化步打印）
+    opt_loss_accum = 0.0
+    opt_micro_count = 0
 
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
@@ -158,6 +161,10 @@ def train_epoch(epoch, wandb):
 
         scaler.scale(loss).backward()
 
+        # 记录优化步窗口统计（用未缩放loss，便于与acc=1对齐）
+        opt_loss_accum += loss.item() * args.accumulation_steps
+        opt_micro_count += 1
+
         if (step + 1) % args.accumulation_steps == 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -167,58 +174,68 @@ def train_epoch(epoch, wandb):
 
             optimizer.zero_grad(set_to_none=True)
 
-        if step % args.log_interval == 0:
-            spend_time = time.time() - start_time
-            # 计算实际的 batch 信息
-            batch_seq_len = batch["input_ids"].shape[1]
+            # 仅在优化步边界按优化步频率打印日志
+            opt_step = (step + 1) // args.accumulation_steps
+            if opt_step % max(1, args.log_interval) == 0:
+                spend_time = time.time() - start_time
+                # 计算实际的 batch 信息（当前微步）
+                batch_seq_len = batch["input_ids"].shape[1]
 
-            # 在 DDP 模式下，显示全局累计处理的样本数（所有GPU的总和）
-            if ddp:
-                global_processed_samples = processed_samples * dist.get_world_size()
-            else:
-                global_processed_samples = processed_samples
-
-            # 估算剩余时间（基于已处理的样本比例）
-            if total_samples != float('inf') and total_samples > 0:
-                progress_ratio = global_processed_samples / total_samples
-                if progress_ratio > 0:
-                    estimated_total_time = spend_time / progress_ratio
-                    remaining_time = estimated_total_time - spend_time
+                # 在 DDP 模式下，显示全局累计处理的样本数（所有GPU的总和）
+                if ddp:
+                    global_processed_samples = processed_samples * dist.get_world_size()
                 else:
-                    remaining_time = 0
-            else:
-                # streaming 模式：无法准确估算剩余时间
-                remaining_time = 0
+                    global_processed_samples = processed_samples
 
-            # 构建日志信息
-            total_samples_str = str(int(total_samples)) if total_samples != float('inf') else 'streaming'
-            log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
-                epoch + 1,
-                args.epochs,
-                global_processed_samples,
-                total_samples_str,
-                step,
-                loss.item() * args.accumulation_steps,
-                optimizer.param_groups[-1]['lr'],
-                batch["input_ids"].shape[0],
-                batch_seq_len,
-                int(remaining_time // 60))
-
-            Logger(log_msg)
-
-            if (wandb is not None) and (not ddp or dist.get_rank() == 0):
-                # 计算预估的 epoch 时间
+                # 估算剩余时间（按优化步口径估算）
                 if iter_per_epoch is not None:
-                    estimated_epoch_time = spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60
+                    import math as _math
+                    opt_iters_per_epoch = max(1, _math.ceil(iter_per_epoch / max(1, args.accumulation_steps)))
+                    progress_ratio = min(1.0, opt_step / (args.epochs * opt_iters_per_epoch))
+                    if progress_ratio > 0:
+                        estimated_total_time = spend_time / progress_ratio
+                        remaining_time = estimated_total_time - spend_time
+                    else:
+                        remaining_time = 0
                 else:
                     # streaming 模式：无法准确估算，使用已用时间
-                    estimated_epoch_time = spend_time // 60
+                    remaining_time = 0
 
-                wandb.log({
-                    "loss": loss.item() * args.accumulation_steps,
-                    "lr": optimizer.param_groups[-1]['lr'],
-                    "epoch_Time": estimated_epoch_time
-                })
+                # 构建日志信息（按优化步口径）
+                total_samples_str = str(int(total_samples)) if total_samples != float('inf') else 'streaming'
+                avg_unscaled_loss = opt_loss_accum / max(1, opt_micro_count)
+                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
+                    epoch + 1,
+                    args.epochs,
+                    global_processed_samples,
+                    total_samples_str,
+                    opt_step,
+                    avg_unscaled_loss,
+                    optimizer.param_groups[-1]['lr'],
+                    batch["input_ids"].shape[0],
+                    batch_seq_len,
+                    int(remaining_time // 60))
+
+                Logger(log_msg)
+
+                if (wandb is not None) and (not ddp or dist.get_rank() == 0):
+                    if iter_per_epoch is not None:
+                        # 预估的 epoch 时间（按优化步）
+                        import math as _math
+                        opt_iters_per_epoch = max(1, _math.ceil(iter_per_epoch / max(1, args.accumulation_steps)))
+                        estimated_epoch_time = (spend_time / max(1, opt_step) * opt_iters_per_epoch) // 60 - spend_time // 60
+                    else:
+                        estimated_epoch_time = spend_time // 60
+
+                    wandb.log({
+                        "loss": avg_unscaled_loss,
+                        "lr": optimizer.param_groups[-1]['lr'],
+                        "epoch_Time": estimated_epoch_time
+                    })
+
+                # 重置优化步窗口统计
+                opt_loss_accum = 0.0
+                opt_micro_count = 0
 
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             model.eval()
