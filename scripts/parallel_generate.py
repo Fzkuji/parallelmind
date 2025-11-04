@@ -50,10 +50,6 @@ def load_prompts(args) -> List[Any]:
 
 
 def load_model(args):
-    tokenizer = AutoTokenizer.from_pretrained("./model/")
-    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
-        tokenizer.pad_token = tokenizer.eos_token
-
     if args.model_path:
         ckpt_path = Path(args.model_path)
     else:
@@ -63,8 +59,23 @@ def load_model(args):
     if not ckpt_path.exists():
         raise FileNotFoundError(f"未找到模型权重: {ckpt_path}")
 
-    # 加载checkpoint并自动检测pe_type
-    state_dict = torch.load(ckpt_path, map_location=args.device)
+    # 加载checkpoint
+    checkpoint = torch.load(ckpt_path, map_location=args.device)
+
+    # 兼容新旧格式：新格式包含 model_state_dict 和 tokenizer_path，旧格式直接是 state_dict
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        # 新格式：从checkpoint中读取tokenizer信息
+        state_dict = checkpoint['model_state_dict']
+        tokenizer_path = checkpoint.get('tokenizer_path', './model/')
+    else:
+        # 旧格式：使用默认tokenizer
+        state_dict = checkpoint
+        tokenizer_path = './model/'
+
+    # 加载tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     # 检测checkpoint中是否包含FPE相关的keys
     has_fpe = any(k.startswith("model.fourier_pe.") for k in state_dict.keys())

@@ -253,12 +253,30 @@ def train_epoch(epoch, wandb):
                 state_dict = model.state_dict()
 
             state_dict = {k: v.half() for k, v in state_dict.items()}  # 半精度保存
-            torch.save(state_dict, ckp)
+
+            # 保存 checkpoint，包含模型权重和 tokenizer 信息
+            checkpoint = {
+                'model_state_dict': state_dict,
+                'tokenizer_path': lm_config.tokenizer_path,
+                'vocab_size': lm_config.vocab_size,
+            }
+            torch.save(checkpoint, ckp)
             model.train()
 
 
 def init_model(lm_config):
-    tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
+    # 加载 tokenizer：优先使用命令行指定的，否则使用默认的 minimind tokenizer
+    if hasattr(args, 'tokenizer') and args.tokenizer:
+        tokenizer_path = args.tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    else:
+        # 默认使用 minimind tokenizer
+        tokenizer_path = os.path.join(root_path, 'model')
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+
+    # 存储 tokenizer 路径，用于保存到 checkpoint
+    lm_config.tokenizer_path = tokenizer_path
+
     if tokenizer.pad_token is None:
         if tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -281,7 +299,14 @@ def init_model(lm_config):
         if not os.path.exists(init_path):
             raise FileNotFoundError(f"init_weight checkpoint not found: {init_path}")
         Logger(f"加载初始权重: {init_path}")
-        state_dict = torch.load(init_path, map_location=args.device)
+        checkpoint = torch.load(init_path, map_location=args.device)
+
+        # 兼容新旧格式：新格式包含 model_state_dict，旧格式直接是 state_dict
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        else:
+            state_dict = checkpoint
+
         model.load_state_dict(state_dict, strict=False)
 
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
@@ -332,6 +357,11 @@ if __name__ == "__main__":
     parser.add_argument('--use_moe', default=False, type=bool)
     default_data_path = os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
+
+    # Tokenizer 参数
+    parser.add_argument("--tokenizer", type=str, default=None,
+                        help="Tokenizer 路径或HuggingFace模型名称。默认使用 model/ 目录下的 minimind tokenizer。"
+                             "例如: --tokenizer gpt2 或 --tokenizer Qwen/Qwen2.5-0.5B-Instruct")
 
     # Hugging Face 数据集参数
     parser.add_argument("--hf-dataset", type=str, default=None, help="Hugging Face数据集名称，如 'HuggingFaceFW/fineweb-edu'")

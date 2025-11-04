@@ -26,17 +26,34 @@ app = FastAPI()
 
 def init_model(args):
     if args.load == 0:
-        tokenizer = AutoTokenizer.from_pretrained('../model/')
         moe_path = '_moe' if args.use_moe else ''
         modes = {0: 'pretrain', 1: 'full_sft', 2: 'rlhf', 3: 'reason'}
         ckp = f'../{args.out_dir}/{modes[args.model_mode]}_{args.hidden_size}{moe_path}.pth'
+
+        # 加载checkpoint
+        checkpoint = torch.load(ckp, map_location=device)
+
+        # 兼容新旧格式：新格式包含 model_state_dict 和 tokenizer_path，旧格式直接是 state_dict
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            # 新格式：从checkpoint中读取tokenizer信息
+            state_dict = checkpoint['model_state_dict']
+            tokenizer_path = checkpoint.get('tokenizer_path', '../model/')
+        else:
+            # 旧格式：使用默认tokenizer
+            state_dict = checkpoint
+            tokenizer_path = '../model/'
+
+        # 加载tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+        # 加载模型
         model = MiniMindForCausalLM(MiniMindConfig(
             hidden_size=args.hidden_size,
             num_hidden_layers=args.num_hidden_layers,
             max_seq_len=args.max_seq_len,
             use_moe=args.use_moe
         ))
-        model.load_state_dict(torch.load(ckp, map_location=device), strict=True)
+        model.load_state_dict(state_dict, strict=True)
         if args.lora_name != 'None':
             apply_lora(model)
             load_lora(model, f'../{args.out_dir}/{args.lora_name}_{args.hidden_size}.pth')
