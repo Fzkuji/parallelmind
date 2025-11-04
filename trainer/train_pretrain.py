@@ -100,7 +100,7 @@ def print_first_batch_sample(batch, tokenizer):
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
-    processed_dataset_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数）
+    processed_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数 = branches 数量）
 
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
@@ -114,9 +114,9 @@ def train_epoch(epoch, wandb):
         branch_counts = batch.pop("branch_counts")
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
 
-        # 更新计数
-        batch_dataset_samples = int(branch_counts.sum().item())  # 这个 batch 使用的原始文本数
-        processed_dataset_samples += batch_dataset_samples
+        # 更新计数：1 sample = 1 branch = 1 个 JSONL 行
+        batch_samples = int(branch_counts.sum().item())  # 这个 batch 消耗的样本数（JSONL行数）
+        processed_samples += batch_samples
 
         # 计算学习率（streaming 模式下估算总步数）
         if iter_per_epoch is not None:
@@ -171,9 +171,9 @@ def train_epoch(epoch, wandb):
             spend_time = time.time() - start_time
             # 计算实际的 batch 信息
             batch_seq_len = batch["input_ids"].shape[1]
-            # 估算剩余时间（基于已处理的原始文本比例）
+            # 估算剩余时间（基于已处理的样本比例）
             if total_samples != float('inf') and total_samples > 0:
-                progress_ratio = processed_dataset_samples / total_samples
+                progress_ratio = processed_samples / total_samples
                 if progress_ratio > 0:
                     estimated_total_time = spend_time / progress_ratio
                     remaining_time = estimated_total_time - spend_time
@@ -188,7 +188,7 @@ def train_epoch(epoch, wandb):
             log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
                 epoch + 1,
                 args.epochs,
-                processed_dataset_samples,
+                processed_samples,
                 total_samples_str,
                 step,
                 loss.item() * args.accumulation_steps,
@@ -500,8 +500,16 @@ if __name__ == "__main__":
             if ddp_local_rank == 0:
                 Logger(f"开始训练（streaming 模式，数据集大小未知）")
         else:
-            total_samples = len(train_ds)
+            dataset_total = len(train_ds)
+            total_samples = dataset_total
             iter_per_epoch = len(train_loader)
+            if ddp_local_rank == 0:
+                if ddp:
+                    world_size = dist.get_world_size()
+                    per_gpu_samples = dataset_total // world_size
+                    Logger(f"数据集总样本数: {dataset_total:,}, 每个GPU分配: ~{per_gpu_samples:,}, 迭代次数: {iter_per_epoch}")
+                else:
+                    Logger(f"数据集总样本数: {dataset_total:,}, 迭代次数: {iter_per_epoch}")
             if iter_per_epoch == 0:
                 Logger("当前切片没有样本，跳过。")
                 continue
