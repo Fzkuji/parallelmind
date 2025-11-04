@@ -171,9 +171,16 @@ def train_epoch(epoch, wandb):
             spend_time = time.time() - start_time
             # 计算实际的 batch 信息
             batch_seq_len = batch["input_ids"].shape[1]
+
+            # 在 DDP 模式下，显示全局累计处理的样本数（所有GPU的总和）
+            if ddp:
+                global_processed_samples = processed_samples * dist.get_world_size()
+            else:
+                global_processed_samples = processed_samples
+
             # 估算剩余时间（基于已处理的样本比例）
             if total_samples != float('inf') and total_samples > 0:
-                progress_ratio = processed_samples / total_samples
+                progress_ratio = global_processed_samples / total_samples
                 if progress_ratio > 0:
                     estimated_total_time = spend_time / progress_ratio
                     remaining_time = estimated_total_time - spend_time
@@ -188,7 +195,7 @@ def train_epoch(epoch, wandb):
             log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
                 epoch + 1,
                 args.epochs,
-                processed_samples,
+                global_processed_samples,
                 total_samples_str,
                 step,
                 loss.item() * args.accumulation_steps,
@@ -508,7 +515,7 @@ if __name__ == "__main__":
                     world_size = dist.get_world_size()
                     per_gpu_samples = dataset_total // world_size
                     Logger(f"数据集总样本数: {dataset_total:,}, 每个GPU分配: ~{per_gpu_samples:,}, 迭代次数: {iter_per_epoch}")
-                    Logger(f"注意: 日志中显示的进度 (processed/total) 中，processed是当前GPU累计处理数，total是全局总数")
+                    Logger(f"日志进度 (processed/total): processed是全局累计处理数(所有GPU总和), total是数据集总样本数")
                 else:
                     Logger(f"数据集总样本数: {dataset_total:,}, 迭代次数: {iter_per_epoch}")
             if iter_per_epoch == 0:
