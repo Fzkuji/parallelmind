@@ -539,8 +539,21 @@ class ParallelPretrainIterableDataset(IterableDataset):
             num_shards = worker_info.num_workers
             shard_id = worker_info.id
 
+        # 计算当前 shard 的 max_samples（全局总数 / 分片数）
+        if self.max_samples and num_shards > 1:
+            per_shard_max_samples = self.max_samples // num_shards
+            # 如果是最后一个 shard，处理余数
+            if shard_id == num_shards - 1:
+                per_shard_max_samples += self.max_samples % num_shards
+
+            # 只在主进程打印分片信息
+            if self._is_main_process():
+                print(f"  数据分片: {num_shards} 个进程，每个进程最多处理 ~{self.max_samples // num_shards:,} 个样本")
+        else:
+            per_shard_max_samples = self.max_samples
+
         # 迭代数据并手动分片 + 动态切分
-        chunk_count = 0  # 统计切分后的chunk数量（实际训练样本数）
+        chunk_count = 0  # 统计切分后的chunk数量（当前shard的训练样本数）
         global_idx = 0   # 全局样本索引
 
         for item in dataset:
@@ -557,13 +570,13 @@ class ParallelPretrainIterableDataset(IterableDataset):
                 if self.chunk_length and self.tokenizer:
                     chunks = self._chunk_text(text)
                     for chunk in chunks:
-                        if self.max_samples and chunk_count >= self.max_samples:
-                            return  # 达到chunk数量限制，停止生成
+                        if per_shard_max_samples and chunk_count >= per_shard_max_samples:
+                            return  # 达到当前shard的chunk数量限制，停止生成
                         yield {"text": chunk}
                         chunk_count += 1
                 else:
-                    if self.max_samples and chunk_count >= self.max_samples:
-                        return  # 达到样本数量限制，停止生成
+                    if per_shard_max_samples and chunk_count >= per_shard_max_samples:
+                        return  # 达到当前shard的样本数量限制，停止生成
                     yield {"text": text}
                     chunk_count += 1
 
