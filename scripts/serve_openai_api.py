@@ -46,12 +46,19 @@ def init_model(args):
         # 加载tokenizer
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
+        # 获取vocab_size：优先从checkpoint读取，否则从tokenizer获取
+        if isinstance(checkpoint, dict) and 'vocab_size' in checkpoint:
+            vocab_size = checkpoint['vocab_size']
+        else:
+            vocab_size = len(tokenizer)
+
         # 加载模型
         model = MiniMindForCausalLM(MiniMindConfig(
             hidden_size=args.hidden_size,
             num_hidden_layers=args.num_hidden_layers,
             max_seq_len=args.max_seq_len,
-            use_moe=args.use_moe
+            use_moe=args.use_moe,
+            vocab_size=vocab_size
         ))
         model.load_state_dict(state_dict, strict=True)
         if args.lora_name != 'None':

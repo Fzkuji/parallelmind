@@ -77,6 +77,14 @@ def load_model(args):
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # 获取vocab_size：优先从checkpoint读取，否则从tokenizer获取
+    if isinstance(checkpoint, dict) and 'vocab_size' in checkpoint:
+        vocab_size = checkpoint['vocab_size']
+        print(f"✓ 从checkpoint加载 vocab_size: {vocab_size}")
+    else:
+        vocab_size = len(tokenizer)
+        print(f"✓ 从tokenizer获取 vocab_size: {vocab_size}")
+
     # 检测checkpoint中是否包含FPE相关的keys
     has_fpe = any(k.startswith("model.fourier_pe.") for k in state_dict.keys())
 
@@ -98,6 +106,7 @@ def load_model(args):
         hidden_size=args.hidden_size,
         num_hidden_layers=args.num_hidden_layers,
         use_moe=args.use_moe,
+        vocab_size=vocab_size,
         inference_rope_scaling=args.inference_rope_scaling,
         pe_type=pe_type,
         fpe_max_positions=fpe_max_positions,
