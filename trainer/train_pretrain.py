@@ -37,6 +37,66 @@ def get_lr(current_step, total_steps, lr):
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
 
 
+def print_first_batch_sample(batch, tokenizer):
+    """打印第一个batch的示例，帮助验证数据和labels的正确性"""
+    Logger("=" * 80)
+    Logger("第一个 Batch 数据示例:")
+    Logger("=" * 80)
+
+    # 显示batch维度信息
+    batch_size = batch["input_ids"].shape[0]
+    seq_len = batch["input_ids"].shape[1]
+    Logger(f"Batch shape: {batch_size} samples × {seq_len} tokens")
+    Logger(f"Branch counts: {batch['branch_counts'].tolist()}")
+    Logger("")
+
+    # 显示第一个sample的详细信息
+    sample_idx = 0
+    Logger(f"Sample {sample_idx} 详细信息:")
+    Logger(f"  该sample有 {batch['branch_counts'][sample_idx]} 个branches")
+
+    # 找出该sample的所有branch
+    pos2d = batch["pos2d"][sample_idx]  # [seq_len, 2]
+    attention_mask = batch["attention_mask"][sample_idx]  # [seq_len]
+    input_ids = batch["input_ids"][sample_idx]  # [seq_len]
+    labels = batch["labels"][sample_idx]  # [seq_len]
+
+    # 获取所有unique branch positions
+    valid_mask = attention_mask == 1
+    branch_positions = pos2d[valid_mask, 0].unique().tolist()
+
+    Logger(f"  Branch positions: {branch_positions[:5]}{'...' if len(branch_positions) > 5 else ''}")
+    Logger("")
+
+    # 显示前2个branch的内容
+    for branch_idx, branch_pos in enumerate(branch_positions[:2]):
+        # 找到该branch的所有tokens
+        branch_mask = (pos2d[:, 0] == branch_pos) & valid_mask
+        branch_token_ids = input_ids[branch_mask]
+        branch_labels = labels[branch_mask]
+
+        # 解码文本
+        text = tokenizer.decode(branch_token_ids[:50], skip_special_tokens=True)  # 只显示前50个token
+        Logger(f"  Branch {branch_idx} (pos={branch_pos}):")
+        Logger(f"    Tokens: {branch_token_ids[:10].tolist()}{'...' if len(branch_token_ids) > 10 else ''}")
+        Logger(f"    Text: {text[:100]}{'...' if len(text) > 100 else ''}")
+
+        # 验证labels的正确性：显示前几个token和它们的label
+        Logger(f"    Label验证 (input → label):")
+        for i in range(min(5, len(branch_token_ids) - 1)):
+            input_token = branch_token_ids[i].item()
+            label_token = branch_labels[i].item()
+            next_token = branch_token_ids[i + 1].item()
+
+            # label应该等于下一个token
+            status = "✓" if label_token == next_token else "✗"
+            Logger(f"      {status} token[{i}]={input_token} → label={label_token} (expected={next_token})")
+        Logger("")
+
+    Logger("=" * 80)
+    Logger("")
+
+
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
@@ -45,6 +105,10 @@ def train_epoch(epoch, wandb):
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
     for step, batch in enumerate(train_loader):
+        # 在第一个epoch的第一个step，打印batch示例
+        if epoch == 0 and step == 0:
+            print_first_batch_sample(batch, tokenizer)
+
         batch = {k: v.to(args.device) for k, v in batch.items()}
         branch_counts = batch.pop("branch_counts")
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
@@ -261,7 +325,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 声明全局变量
-    global total_samples, effective_batch_size, iter_per_epoch
+    global total_samples, effective_batch_size, iter_per_epoch, tokenizer
 
     if args.branch_slice_count is not None and args.branch_slice_count <= 0:
         raise ValueError("--branch_slice_count must be positive")
