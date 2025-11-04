@@ -481,13 +481,7 @@ class ParallelPretrainIterableDataset(IterableDataset):
         except ImportError:
             raise ImportError("需要安装 datasets 库: pip install datasets")
 
-        # 离线模式：设置环境变量避免网络访问
-        if self.offline:
-            import os
-            os.environ['HF_DATASETS_OFFLINE'] = '1'
-            os.environ['HF_HUB_OFFLINE'] = '1'
-
-        # 加载 streaming 数据集
+        # 加载 streaming 数据集（离线模式在训练脚本启动时已设置环境变量）
         if self.hf_subset:
             dataset = load_dataset(
                 self.hf_dataset,

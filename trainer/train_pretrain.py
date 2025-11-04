@@ -385,6 +385,11 @@ if __name__ == "__main__":
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
     args = parser.parse_args()
 
+    # 如果启用离线模式，立即设置环境变量（在加载数据集之前）
+    if getattr(args, 'offline', False):
+        os.environ['HF_DATASETS_OFFLINE'] = '1'
+        os.environ['HF_HUB_OFFLINE'] = '1'
+
     # 声明全局变量
     global total_samples, effective_batch_size, iter_per_epoch, tokenizer
 
