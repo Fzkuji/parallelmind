@@ -105,13 +105,7 @@ def train_epoch(epoch, wandb):
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
 
-    Logger(f"开始 epoch {epoch + 1}, 开始迭代 DataLoader...")
-    step_count = 0
     for step, batch in enumerate(train_loader):
-        step_count += 1
-        # DEBUG: 打印前10个steps的信息
-        if step < 10:
-            Logger(f"DEBUG: 进入 step {step}, batch size={batch['input_ids'].shape}")
         # 在第一个epoch的第一个step，打印batch示例
         if epoch == 0 and step == 0:
             print_first_batch_sample(batch, tokenizer)
@@ -232,12 +226,6 @@ def train_epoch(epoch, wandb):
             state_dict = {k: v.half() for k, v in state_dict.items()}  # 半精度保存
             torch.save(state_dict, ckp)
             model.train()
-
-        # DEBUG: 打印前10个steps完成的信息
-        if step < 10:
-            Logger(f"DEBUG: 完成 step {step}")
-
-    Logger(f"Epoch {epoch + 1} 训练循环结束, 共完成 {step_count} 个steps")
 
 
 def init_model(lm_config):
@@ -514,14 +502,12 @@ if __name__ == "__main__":
         else:
             total_samples = len(train_ds)
             iter_per_epoch = len(train_loader)
-            Logger(f"数据集信息: 总样本数={total_samples}, 预期迭代次数={iter_per_epoch}, batch_size={effective_batch_size}")
             if iter_per_epoch == 0:
                 Logger("当前切片没有样本，跳过。")
                 continue
 
         for epoch in range(args.epochs):
             train_epoch(epoch, wandb)
-            Logger(f"Epoch {epoch + 1}/{args.epochs} 完成")
 
         if args.branch_slice_count is not None and slice_idx is not None:
             Logger(f"=== 完成 branch slice {slice_desc} ===")
