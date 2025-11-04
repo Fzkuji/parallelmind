@@ -410,6 +410,7 @@ class ParallelPretrainIterableDataset(IterableDataset):
         max_samples: Optional[int] = None,
         chunk_length: Optional[int] = None,
         tokenizer: Optional[AutoTokenizer] = None,
+        offline: bool = False,
     ) -> None:
         super().__init__()
         self.hf_dataset = hf_dataset
@@ -419,6 +420,7 @@ class ParallelPretrainIterableDataset(IterableDataset):
         self.max_samples = max_samples
         self.chunk_length = chunk_length
         self.tokenizer = tokenizer
+        self.offline = offline
 
         # 只在主进程打印初始化信息
         if self._is_main_process():
@@ -431,6 +433,8 @@ class ParallelPretrainIterableDataset(IterableDataset):
                 print(f"  警告：未设置 chunk_length，长文本不会被切分！")
             if not tokenizer:
                 print(f"  警告：未传递 tokenizer，文本切分功能将被禁用！")
+            if offline:
+                print(f"  离线模式：使用已缓存的数据集")
 
     def _is_main_process(self) -> bool:
         """检查是否为主进程"""
@@ -476,6 +480,12 @@ class ParallelPretrainIterableDataset(IterableDataset):
             from datasets import load_dataset
         except ImportError:
             raise ImportError("需要安装 datasets 库: pip install datasets")
+
+        # 离线模式：设置环境变量避免网络访问
+        if self.offline:
+            import os
+            os.environ['HF_DATASETS_OFFLINE'] = '1'
+            os.environ['HF_HUB_OFFLINE'] = '1'
 
         # 加载 streaming 数据集
         if self.hf_subset:
