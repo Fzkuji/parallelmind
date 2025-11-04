@@ -463,7 +463,11 @@ if __name__ == "__main__":
             is_iterable = True
         else:
             # 从本地文件加载 - 使用普通 Dataset
-            train_ds = ParallelPretrainDataset(args.data_path, **dataset_kwargs)
+            train_ds = ParallelPretrainDataset(
+                args.data_path,
+                max_samples=getattr(args, 'max_samples', None),
+                **dataset_kwargs
+            )
             is_iterable = False
 
         collator._buffer.clear()

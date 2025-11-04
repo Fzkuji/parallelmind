@@ -47,6 +47,9 @@ class ParallelPretrainDataset(Dataset):
                 offset = 0
                 for line in handle:
                     if line.strip():
+                        # 如果设置了 max_samples，限制加载的样本数量
+                        if max_samples and len(self.offsets) >= max_samples:
+                            break
                         self.offsets.append(offset)
                     offset += len(line.encode('utf-8'))
 
