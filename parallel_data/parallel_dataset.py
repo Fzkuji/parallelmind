@@ -540,16 +540,14 @@ class ParallelPretrainIterableDataset(IterableDataset):
             shard_id = worker_info.id
 
         # 迭代数据并手动分片 + 动态切分
-        count = 0
-        global_idx = 0  # 全局样本索引
+        chunk_count = 0  # 统计切分后的chunk数量（实际训练样本数）
+        global_idx = 0   # 全局样本索引
+
         for item in dataset:
             # 手动分片：只处理属于当前 shard 的样本
             if global_idx % num_shards != shard_id:
                 global_idx += 1
                 continue
-
-            if self.max_samples and count >= self.max_samples:
-                break
 
             text_content = item.get(self.text_column, "")
             if isinstance(text_content, str) and text_content.strip():
@@ -559,10 +557,14 @@ class ParallelPretrainIterableDataset(IterableDataset):
                 if self.chunk_length and self.tokenizer:
                     chunks = self._chunk_text(text)
                     for chunk in chunks:
+                        if self.max_samples and chunk_count >= self.max_samples:
+                            return  # 达到chunk数量限制，停止生成
                         yield {"text": chunk}
+                        chunk_count += 1
                 else:
+                    if self.max_samples and chunk_count >= self.max_samples:
+                        return  # 达到样本数量限制，停止生成
                     yield {"text": text}
-
-                count += 1
+                    chunk_count += 1
 
             global_idx += 1
