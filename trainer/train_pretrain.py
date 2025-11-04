@@ -501,13 +501,14 @@ if __name__ == "__main__":
                 Logger(f"开始训练（streaming 模式，数据集大小未知）")
         else:
             dataset_total = len(train_ds)
-            total_samples = dataset_total
+            total_samples = dataset_total  # 全局数据集总样本数（不是单个GPU的）
             iter_per_epoch = len(train_loader)
             if ddp_local_rank == 0:
                 if ddp:
                     world_size = dist.get_world_size()
                     per_gpu_samples = dataset_total // world_size
                     Logger(f"数据集总样本数: {dataset_total:,}, 每个GPU分配: ~{per_gpu_samples:,}, 迭代次数: {iter_per_epoch}")
+                    Logger(f"注意: 日志中显示的进度 (processed/total) 中，processed是当前GPU累计处理数，total是全局总数")
                 else:
                     Logger(f"数据集总样本数: {dataset_total:,}, 迭代次数: {iter_per_epoch}")
             if iter_per_epoch == 0:
