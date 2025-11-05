@@ -436,6 +436,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --min_branches_per_sample 1 \
   --max_total_tokens 0 \
   --data_path dataset/pretrain_hq_split.jsonl \
+  --max-samples 1000000 \
   --val_samples 500000 \
   --val_interval 1000 \
   --out_dir out/rope_pretrain \
@@ -444,6 +445,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
 
 **参数说明**：
 - `--rope_2d_ratio 0.5`: RoPE维度中用于branch的比例（50%用于2D，50%用于1D time）
+- `--max-samples 1000000`: 限制训练样本数量为100万（不设置则使用全部数据）
 - `--val_samples 500000`: 从训练数据中随机抽取50万样本作为验证集
 - `--val_interval 1000`: 每1000个优化步进行一次验证
 
