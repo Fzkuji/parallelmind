@@ -6,9 +6,12 @@
 
 `process_fineweb_edu_10bt.py` 脚本提供以下功能：
 
-1. **去重**
-   - 使用 MD5 hash 检测并移除完全相同的文本
-   - 内存高效的 hash set 实现
+1. **智能去重**
+   - **精确去重**：使用 MD5 hash 检测并移除完全相同的文本
+   - **近似去重**：使用 MinHash 算法检测并移除高度相似的文本
+     - 基于 3-gram 特征和 Jaccard 相似度估算
+     - 可配置相似度阈值（默认 0.85 = 85%相似即视为重复）
+     - 可选择只使用精确去重或同时启用近似去重
 
 2. **质量过滤**
    - 移除乱码文本（非 ASCII 字符占比过高）
@@ -33,25 +36,28 @@
 
 ```bash
 # 处理全部 10BT 数据，使用96核并行处理（推荐）
+# 默认启用近似去重（85%相似度阈值）
 python scripts/dataset/process_fineweb_edu_10bt.py \
     --output-dir dataset/fineweb-edu-10BT \
     --tokenizer gpt2 \
     --num-workers 96
 
-# 测试处理（10万样本）
-python scripts/dataset/process_fineweb_edu_10bt.py \
-    --max-samples 100000 \
-    --output-dir dataset/fineweb-edu-10BT \
-    --tokenizer gpt2 \
-    --num-workers 96
-
-# 使用离线模式（数据已缓存）
+# 测试处理（10万样本），使用精确去重
 python scripts/dataset/process_fineweb_edu_10bt.py \
     --max-samples 100000 \
     --output-dir dataset/fineweb-edu-10BT \
     --tokenizer gpt2 \
     --num-workers 96 \
-    --offline
+    --dedup-threshold 1.0
+
+# 使用离线模式（数据已缓存）+ 近似去重（90%相似度阈值）
+python scripts/dataset/process_fineweb_edu_10bt.py \
+    --max-samples 100000 \
+    --output-dir dataset/fineweb-edu-10BT \
+    --tokenizer gpt2 \
+    --num-workers 96 \
+    --offline \
+    --dedup-threshold 0.90
 ```
 
 #### 参数说明
@@ -66,6 +72,13 @@ python scripts/dataset/process_fineweb_edu_10bt.py \
 - `--offline`: 离线模式，使用已缓存的数据集
 - `--num-workers`: 并行处理的进程数（默认：1，建议：96 for 128-core server）
 - `--batch-size`: 批处理大小（默认：1000）
+- `--dedup-threshold`: 近似去重的相似度阈值（默认：0.85）
+  - 设置为 `1.0`：只使用精确去重（MD5 hash）
+  - 设置为 `0.85`：相似度 ≥85% 的文本会被认为是重复
+  - 设置为 `0.90`：更严格的去重（只移除 ≥90% 相似的文本）
+- `--num-perm`: MinHash 签名的 hash 函数数量（默认：128）
+  - 越大越精确，但计算和存储开销越大
+  - 推荐值：64-256
 
 #### 自定义配置
 
@@ -95,6 +108,20 @@ python scripts/dataset/process_fineweb_edu_10bt.py \
     --tokenizer gpt2 \
     --num-workers 96 \
     --batch-size 2000
+
+# 使用更严格的近似去重（90%相似度阈值）
+python scripts/dataset/process_fineweb_edu_10bt.py \
+    --tokenizer gpt2 \
+    --num-workers 96 \
+    --dedup-threshold 0.90 \
+    --max-samples 100000
+
+# 只使用精确去重（关闭近似去重）
+python scripts/dataset/process_fineweb_edu_10bt.py \
+    --tokenizer gpt2 \
+    --num-workers 96 \
+    --dedup-threshold 1.0 \
+    --max-samples 100000
 ```
 
 ### 输出格式
@@ -115,13 +142,16 @@ python scripts/dataset/process_fineweb_edu_10bt.py \
 Processing completed!
 ============================================================
 Total samples processed: 100,000
-Duplicates removed: 1,234
+Exact duplicates removed: 1,234
+Near-duplicates removed (>=85% similar): 3,456
 Garbage texts removed: 567
 Repetitive texts removed: 890
 Chunks created: 234,567
 Output file: dataset/fineweb-edu-10BT/train.jsonl
 ============================================================
 ```
+
+注：如果使用 `--dedup-threshold 1.0`（只精确去重），则不会显示 "Near-duplicates removed" 行。
 
 ### 质量过滤规则
 
@@ -136,6 +166,36 @@ Output file: dataset/fineweb-edu-10BT/train.jsonl
 - 连续3个词的短语重复次数 > 10%
 
 这些阈值可以在脚本中调整。
+
+### 去重策略
+
+脚本提供两种去重方式，可同时启用或单独使用：
+
+#### 精确去重（MD5 Hash）
+- 使用 MD5 hash 检测完全相同的文本
+- 即使有一个字符不同，也会被认为是不同的文本
+- 速度快，内存占用小
+- 适合移除完全重复的内容
+
+#### 近似去重（MinHash + Jaccard Similarity）
+- 使用 MinHash 算法估算文本的 Jaccard 相似度
+- 基于 3-gram 字符特征（适合多语言文本）
+- 可配置相似度阈值（默认 0.85）
+- 能够检测到稍有差异的近似重复文本
+- 适合移除高度相似但不完全相同的内容（如：格式化不同、标点符号差异、轻微编辑等）
+
+#### 性能影响
+- **精确去重**：几乎无性能影响
+- **近似去重**：每个文本增加约 10-20% 的计算时间
+  - MinHash 签名计算：每个文本需要计算 128 个 hash 值（可配置）
+  - 相似度比较：需要与已处理的文本进行比较（O(n) 复杂度）
+  - 内存占用：每个文本额外存储 128 个整数（约 512 bytes）
+
+#### 建议配置
+- **快速处理**：`--dedup-threshold 1.0`（只精确去重）
+- **标准去重**：`--dedup-threshold 0.85`（默认，移除 85% 以上相似的文本）
+- **严格去重**：`--dedup-threshold 0.90`（只移除非常相似的文本）
+- **最大去重**：`--dedup-threshold 0.75`（更激进，可能误删略有差异的文本）
 
 ### Token 长度测试
 
