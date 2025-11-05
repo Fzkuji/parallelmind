@@ -284,20 +284,20 @@ def train_epoch(epoch, wandb):
                 avg_unscaled_loss = opt_loss_accum / max(1, opt_micro_count)
                 # 以分钟显示，避免过早显示为0，使用四舍五入
                 remaining_min = int((remaining_time / 60.0) + 0.5)
-            log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] tokens_trained:{} epoch_Time:{}min:'.format(
-                epoch + 1,
-                args.epochs,
-                global_processed_samples,
-                total_samples_str,
-                opt_step,
-                avg_unscaled_loss,
-                optimizer.param_groups[-1]['lr'],
-                batch["input_ids"].shape[0],
-                batch_seq_len,
-                trained_tokens,
-                remaining_min)
+                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] tokens_trained:{} epoch_Time:{}min:'.format(
+                    epoch + 1,
+                    args.epochs,
+                    global_processed_samples,
+                    total_samples_str,
+                    opt_step,
+                    avg_unscaled_loss,
+                    optimizer.param_groups[-1]['lr'],
+                    batch["input_ids"].shape[0],
+                    batch_seq_len,
+                    trained_tokens,
+                    remaining_min)
 
-            Logger(log_msg)
+                Logger(log_msg)
 
                 if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                     # 与控制台一致的ETA估算（分钟）
