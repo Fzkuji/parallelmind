@@ -434,6 +434,8 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --batch_by_samples \
   --max_branches_per_sample 16 \
   --min_branches_per_sample 1 \
+  --val_max_branches_per_sample 4 \
+  --val_min_branches_per_sample 4 \
   --max_total_tokens 0 \
   --data_path dataset/pretrain_hq_split.jsonl \
   --max-samples 2048000 \
@@ -448,6 +450,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
 - `--max-samples 2048000`: 限制训练样本数量为204.8万（不设置则使用全部数据）
 - `--val_samples 500000`: 从训练数据中随机抽取50万样本作为验证集
 - `--val_interval_samples 204800`: 每训练20.48万个样本进行一次验证（约每10%数据验证一次）
+- `--val_max_branches_per_sample / --val_min_branches_per_sample`: 验证集分支控制。若两者都为4，则验证时每个sample固定4个分支；也可设为区间实现动态分支。
 
 **验证间隔设置**：
 - `--val_interval 1000`: 基于优化步数，每1000步验证一次

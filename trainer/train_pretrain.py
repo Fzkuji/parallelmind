@@ -449,6 +449,10 @@ if __name__ == "__main__":
     parser.add_argument('--branches_per_sample', type=int, default=8)
     parser.add_argument('--max_branches_per_sample', type=int, default=None, help='Maximum branches per sample for dynamic mode (1-32). If set, enables dynamic branches.')
     parser.add_argument('--min_branches_per_sample', type=int, default=1, help='Minimum branches per sample for dynamic mode')
+    # Validation-specific branch controls
+    parser.add_argument('--val_branches_per_sample', type=int, default=None, help='Validation: fixed branches per sample. Ignored if --val_max_branches_per_sample is set.')
+    parser.add_argument('--val_max_branches_per_sample', type=int, default=None, help='Validation: max branches per sample (enables dynamic mode when set).')
+    parser.add_argument('--val_min_branches_per_sample', type=int, default=None, help='Validation: min branches per sample (used in dynamic mode). Defaults to training min if unset.')
     parser.add_argument('--random_time_offset', action='store_true', default=True, help='Enable random time offset for branches during training')
     parser.add_argument('--no_random_time_offset', action='store_false', dest='random_time_offset', help='Disable random time offset')
     parser.add_argument('--batch_by_samples', action='store_true', default=False, help='If True, batch_size refers to number of samples (not texts). Better for dynamic branches.')
@@ -711,18 +715,30 @@ if __name__ == "__main__":
         # 创建验证集 DataLoader
         if val_ds is not None:
             # 为验证集创建一个新的 collator（避免与训练 collator 的 buffer 冲突）
+            # 支持单独控制验证时的分支数量（固定或动态）
+            val_branches = args.val_branches_per_sample if args.val_branches_per_sample is not None else args.branches_per_sample
+            val_min_branches = args.val_min_branches_per_sample if args.val_min_branches_per_sample is not None else args.min_branches_per_sample
+            # 若设置了 val_max，则启用动态；否则默认沿用训练侧的 max（保持旧行为）。
+            val_max_branches = args.val_max_branches_per_sample if args.val_max_branches_per_sample is not None else args.max_branches_per_sample
+
             val_collator = ParallelPretrainCollator(
                 tokenizer,
-                branches_per_sample=args.branches_per_sample,
+                branches_per_sample=val_branches,
                 pad_to=args.max_total_tokens if args.max_total_tokens > 0 else None,
-                max_branches_per_sample=args.max_branches_per_sample,
-                min_branches_per_sample=args.min_branches_per_sample,
+                max_branches_per_sample=val_max_branches,
+                min_branches_per_sample=val_min_branches,
                 random_time_offset=args.random_time_offset,
                 interleave_branches=True,
                 branch_stride=branch_stride,
             )
             if args.batch_by_samples:
                 val_collator.target_samples = args.batch_size
+
+            # 记录验证分支配置
+            if val_max_branches is not None:
+                Logger(f"验证分支配置: 动态范围 [{val_min_branches}, {val_max_branches}]（min==max 将固定为该值）")
+            else:
+                Logger(f"验证分支配置: 固定 {val_branches} 个分支/样本")
 
             val_loader = DataLoader(
                 val_ds,
