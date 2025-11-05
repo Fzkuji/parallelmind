@@ -9,16 +9,18 @@
 5. 保存为 JSON Lines 格式，每行包含 <|im_start|> 和 <|im_end|> 标记
 
 使用方法：
-    # 处理全部数据，每段精确控制在512 tokens
+    # 处理全部数据，使用96核并行处理
     python scripts/dataset/process_fineweb_edu_10bt.py \
         --output-dir dataset/fineweb-edu-10BT \
-        --tokenizer gpt2
+        --tokenizer gpt2 \
+        --num-workers 96
 
     # 测试处理（10万样本）
     python scripts/dataset/process_fineweb_edu_10bt.py \
         --max-samples 100000 \
         --output-dir dataset/fineweb-edu-10BT \
-        --tokenizer gpt2
+        --tokenizer gpt2 \
+        --num-workers 96
 """
 
 import argparse
@@ -27,9 +29,11 @@ import json
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, Tuple
 from tqdm import tqdm
 from transformers import AutoTokenizer
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 
 def compute_hash(text: str) -> str:
@@ -225,6 +229,47 @@ def create_chunks(
     return chunks
 
 
+def process_single_item(
+    item: Dict,
+    tokenizer_name: str,
+    max_tokens_per_chunk: int,
+) -> Tuple[Optional[str], str, Dict]:
+    """
+    处理单个数据样本（用于并行处理）
+
+    返回：
+        (text_hash, status, chunks_data)
+        - text_hash: 文本的hash值，用于去重
+        - status: 处理状态 ('success', 'empty', 'garbage', 'repetitive')
+        - chunks_data: 处理后的chunks列表
+    """
+    # 加载tokenizer（每个进程独立加载）
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+
+    text = item.get('text', '').strip()
+    if not text:
+        return None, 'empty', {}
+
+    # 计算hash用于去重
+    text_hash = compute_hash(text)
+
+    # 质量过滤：检测乱码
+    if is_garbage_text(text):
+        return text_hash, 'garbage', {}
+
+    # 质量过滤：检测重复句子
+    if has_repetitive_sentences(text):
+        return text_hash, 'repetitive', {}
+
+    # 切分文本
+    chunks = create_chunks(text, tokenizer=tokenizer, max_tokens=max_tokens_per_chunk)
+
+    # 过滤太短的chunk
+    valid_chunks = [chunk for chunk in chunks if len(chunk.strip()) >= 50]
+
+    return text_hash, 'success', {'chunks': valid_chunks}
+
+
 def process_dataset(
     dataset_name: str = "HuggingFaceFW/fineweb-edu",
     subset: str = "sample-10BT",
@@ -234,14 +279,21 @@ def process_dataset(
     tokenizer_name: str = "gpt2",
     output_dir: str = "dataset/fineweb-edu-10BT",
     offline: bool = False,
+    num_workers: int = 1,
+    batch_size: int = 1000,
 ):
     """
     处理数据集的主函数
+
+    Args:
+        num_workers: 并行处理的进程数
+        batch_size: 每批处理的样本数
     """
     from datasets import load_dataset
 
     print(f"Loading tokenizer: {tokenizer_name}")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    # 主进程只需要验证tokenizer可用
+    _ = AutoTokenizer.from_pretrained(tokenizer_name)
 
     print(f"Loading dataset: {dataset_name}/{subset}")
     if offline:
@@ -277,50 +329,80 @@ def process_dataset(
     print(f"Tokenizer: {tokenizer_name}")
     print(f"Max tokens per chunk: {max_tokens_per_chunk}")
     print(f"Max samples: {max_samples if max_samples else 'ALL (10BT)'}")
+    print(f"Parallel workers: {num_workers}")
+    print(f"Batch size: {batch_size}")
     print()
 
+    # 创建处理函数（固定tokenizer_name和max_tokens参数）
+    process_func = partial(
+        process_single_item,
+        tokenizer_name=tokenizer_name,
+        max_tokens_per_chunk=max_tokens_per_chunk
+    )
+
     with open(output_file, 'w', encoding='utf-8') as f:
-        for item in tqdm(dataset, desc="Processing", total=max_samples):
-            stats['total_processed'] += 1
+        # 使用多进程池处理数据
+        with Pool(processes=num_workers) as pool:
+            batch = []
+            iterator = iter(dataset)
 
-            # 达到最大样本数
-            if max_samples and stats['total_processed'] > max_samples:
-                break
+            # 使用tqdm显示进度
+            pbar = tqdm(desc="Processing", total=max_samples, unit="samples")
 
-            text = item.get('text', '').strip()
-            if not text:
-                continue
+            while True:
+                # 收集一批数据
+                try:
+                    for _ in range(batch_size):
+                        if max_samples and stats['total_processed'] >= max_samples:
+                            break
+                        item = next(iterator)
+                        batch.append(item)
+                        stats['total_processed'] += 1
+                except StopIteration:
+                    # 数据集遍历完成
+                    pass
 
-            # 去重检查
-            text_hash = compute_hash(text)
-            if text_hash in seen_hashes:
-                stats['duplicates'] += 1
-                continue
-            seen_hashes.add(text_hash)
+                if not batch:
+                    break
 
-            # 质量过滤：检测乱码
-            if is_garbage_text(text):
-                stats['garbage'] += 1
-                continue
+                # 并行处理这一批数据
+                results = pool.map(process_func, batch)
 
-            # 质量过滤：检测重复句子
-            if has_repetitive_sentences(text):
-                stats['repetitive'] += 1
-                continue
+                # 处理结果
+                for text_hash, status, chunks_data in results:
+                    if status == 'empty':
+                        continue
+                    elif status == 'garbage':
+                        stats['garbage'] += 1
+                        continue
+                    elif status == 'repetitive':
+                        stats['repetitive'] += 1
+                        continue
+                    elif status == 'success':
+                        # 去重检查
+                        if text_hash in seen_hashes:
+                            stats['duplicates'] += 1
+                            continue
+                        seen_hashes.add(text_hash)
 
-            # 切分文本（使用 tokenizer 精确控制 token 数）
-            chunks = create_chunks(text, tokenizer=tokenizer, max_tokens=max_tokens_per_chunk)
+                        # 保存chunks
+                        for chunk in chunks_data.get('chunks', []):
+                            formatted_text = f"<|im_start|>{chunk.strip()}<|im_end|>"
+                            json_line = json.dumps({"text": formatted_text}, ensure_ascii=False)
+                            f.write(json_line + '\n')
+                            stats['chunks_created'] += 1
 
-            # 保存每个 chunk
-            for chunk in chunks:
-                if len(chunk.strip()) < 50:  # 跳过太短的chunk
-                    continue
+                # 更新进度条
+                pbar.update(len(batch))
 
-                # 格式化为 JSON Line，添加特殊标记
-                formatted_text = f"<|im_start|>{chunk.strip()}<|im_end|>"
-                json_line = json.dumps({"text": formatted_text}, ensure_ascii=False)
-                f.write(json_line + '\n')
-                stats['chunks_created'] += 1
+                # 清空batch，准备下一轮
+                batch = []
+
+                # 检查是否达到最大样本数
+                if max_samples and stats['total_processed'] >= max_samples:
+                    break
+
+            pbar.close()
 
     # 打印统计信息
     print("\n" + "="*60)
@@ -386,6 +468,18 @@ def main():
         action='store_true',
         help='Use offline mode (use cached dataset)'
     )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=1,
+        help='Number of parallel workers for processing (default: 1, set to 96 for 128-core server)'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=1000,
+        help='Batch size for parallel processing (default: 1000)'
+    )
 
     args = parser.parse_args()
 
@@ -408,6 +502,8 @@ def main():
         tokenizer_name=args.tokenizer,
         output_dir=args.output_dir,
         offline=args.offline,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size,
     )
 
 
