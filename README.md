@@ -475,6 +475,23 @@ python scripts/parallel_generate.py \
   --pe rope
 ```
 
+**Loss评估（验证保存的模型）**：
+
+```bash
+python scripts/eval_loss.py \
+  --model_path out/rope_pretrain/pretrain_512.pth \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --hidden_size 512 \
+  --num_hidden_layers 8 \
+  --pe rope \
+  --rope_2d_ratio 0.5 \
+  --batch_size 4 \
+  --val_max_branches_per_sample 4 \
+  --val_min_branches_per_sample 4
+```
+
+说明：将 `--val_max_branches_per_sample` 与 `--val_min_branches_per_sample` 设为相同值可固定验证分支数；设置为区间（如 1~16）可测试不同分支数量下的loss。
+
 **特点**：
 - **改动最小**：与原有MiniMind架构完全兼容
 - Branch stride=128（自动设置）

@@ -154,6 +154,8 @@ def train_epoch(epoch, wandb):
     # 在一次optimizer step窗口内累计统计（用于按优化步打印）
     opt_loss_accum = 0.0
     opt_micro_count = 0
+    # 在一个epoch内累计的token（仅用于日志展示，真正的全局累计用全局变量trained_tokens）
+    epoch_tokens_since_log = 0
 
     # 验证相关：跟踪上次验证时的样本数（用于基于样本数的验证间隔）
     global last_val_samples
@@ -207,6 +209,8 @@ def train_epoch(epoch, wandb):
             logits = outputs.logits.contiguous()
             labels = batch["labels"].contiguous()
 
+            # 计算本micro-batch的有效token数（labels!=-100）
+            batch_valid_tokens = int((labels != -100).sum().item())
             # 计算交叉熵损失
             loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
 
@@ -215,6 +219,17 @@ def train_epoch(epoch, wandb):
             loss = loss / args.accumulation_steps
 
         scaler.scale(loss).backward()
+
+        # 累计全局token计数（按DDP进程总和口径）
+        if ddp:
+            global_batch_tokens = batch_valid_tokens * dist.get_world_size()
+        else:
+            global_batch_tokens = batch_valid_tokens
+        # 记录到全局与本epoch窗口
+        epoch_tokens_since_log += global_batch_tokens
+        # 使用全局变量记录训练至今累计token数
+        global trained_tokens
+        trained_tokens += global_batch_tokens
 
         # 记录优化步窗口统计（用未缩放loss，便于与acc=1对齐）
         opt_loss_accum += loss.item() * args.accumulation_steps
@@ -269,19 +284,20 @@ def train_epoch(epoch, wandb):
                 avg_unscaled_loss = opt_loss_accum / max(1, opt_micro_count)
                 # 以分钟显示，避免过早显示为0，使用四舍五入
                 remaining_min = int((remaining_time / 60.0) + 0.5)
-                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] epoch_Time:{}min:'.format(
-                    epoch + 1,
-                    args.epochs,
-                    global_processed_samples,
-                    total_samples_str,
-                    opt_step,
-                    avg_unscaled_loss,
-                    optimizer.param_groups[-1]['lr'],
-                    batch["input_ids"].shape[0],
-                    batch_seq_len,
-                    remaining_min)
+            log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] tokens_trained:{} epoch_Time:{}min:'.format(
+                epoch + 1,
+                args.epochs,
+                global_processed_samples,
+                total_samples_str,
+                opt_step,
+                avg_unscaled_loss,
+                optimizer.param_groups[-1]['lr'],
+                batch["input_ids"].shape[0],
+                batch_seq_len,
+                trained_tokens,
+                remaining_min)
 
-                Logger(log_msg)
+            Logger(log_msg)
 
                 if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                     # 与控制台一致的ETA估算（分钟）
@@ -300,6 +316,14 @@ def train_epoch(epoch, wandb):
         # 验证
         if val_loader is not None:
             should_validate = False
+
+            # 方式0：基于token数的验证间隔（最高优先级）
+            if args.val_interval_tokens > 0:
+                current_tokens = trained_tokens
+                global last_val_tokens
+                if current_tokens - last_val_tokens >= args.val_interval_tokens:
+                    should_validate = True
+                    last_val_tokens = current_tokens
 
             # 方式1：基于优化步数的验证间隔
             if args.val_interval > 0:
@@ -499,6 +523,9 @@ if __name__ == "__main__":
                         help="验证间隔（样本数）。每训练多少个样本进行一次验证。"
                              "例如: --val_interval_samples 204800 表示每训练20.48万个样本验证一次。"
                              "此参数优先级高于--val_interval。设置为0则禁用。默认: 0")
+    parser.add_argument("--val_interval_tokens", type=int, default=0,
+                        help="验证间隔（token数）。每训练多少个有效token触发一次验证。"
+                             "有效token指labels!=-100的token数。设置为0则禁用。")
 
     args = parser.parse_args()
 
@@ -508,8 +535,10 @@ if __name__ == "__main__":
         os.environ['HF_HUB_OFFLINE'] = '1'
 
     # 声明全局变量
-    global total_samples, effective_batch_size, iter_per_epoch, tokenizer, val_loader, last_val_samples
-    last_val_samples = 0  # 用于基于样本数的验证间隔
+    global total_samples, effective_batch_size, iter_per_epoch, tokenizer, val_loader, last_val_samples, trained_tokens, last_val_tokens
+    last_val_samples = 0   # 基于样本数的验证间隔
+    trained_tokens = 0     # 全局累计训练过的有效token数量（labels!=-100）
+    last_val_tokens = 0    # 上次验证时的累计token数
 
     if args.branch_slice_count is not None and args.branch_slice_count <= 0:
         raise ValueError("--branch_slice_count must be positive")
