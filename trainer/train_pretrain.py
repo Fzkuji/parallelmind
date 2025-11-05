@@ -387,7 +387,27 @@ def init_model(lm_config):
 
         model.load_state_dict(state_dict, strict=False)
 
-    Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
+    # 打印模型大小信息（总参数、可训练参数、近似权重占用内存）
+    try:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_buffers = sum(b.numel() for b in model.buffers())
+        # 估算内存：按当前参数dtype计算
+        try:
+            first_param = next(model.parameters())
+            bytes_per_elem = first_param.element_size()
+        except StopIteration:
+            bytes_per_elem = 4  # 默认float32
+        params_mem_mb = (total_params * bytes_per_elem) / (1024 ** 2)
+        buffers_mem_mb = (total_buffers * bytes_per_elem) / (1024 ** 2)
+        total_mem_mb = params_mem_mb + buffers_mem_mb
+
+        Logger(f'LLM总参数量：{total_params / 1e6:.3f} 百万')
+        Logger(f'LLM可训练总参数量：{trainable_params / 1e6:.3f} 百万')
+        Logger(f'权重占用(含buffers)≈ {total_mem_mb:.1f} MB  (参数: {params_mem_mb:.1f} MB, buffer: {buffers_mem_mb:.1f} MB, 每元素{bytes_per_elem}字节)')
+    except Exception:
+        # 回退：至少打印可训练参数量
+        Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     return model, tokenizer
 
 
@@ -626,9 +646,17 @@ if __name__ == "__main__":
             val_ds = None  # IterableDataset 不支持简单的分割
         else:
             # 从本地文件加载 - 使用普通 Dataset
+            # 重要：确保训练集与验证集互不挤占配额
+            # 若指定了 max_samples(训练配额) 与 val_samples(验证配额)，
+            # 则在构建完整数据集时需要读取 max_samples + val_samples 个样本，
+            # 之后再切分，保证训练集有足量的 max_samples。
+            _max_train = getattr(args, 'max_samples', None)
+            _val_needed = getattr(args, 'val_samples', 0) or 0
+            _max_for_full = (_max_train + _val_needed) if (_max_train is not None and _val_needed > 0) else _max_train
+
             full_ds = ParallelPretrainDataset(
                 args.data_path,
-                max_samples=getattr(args, 'max_samples', None),
+                max_samples=_max_for_full,
                 **dataset_kwargs
             )
             is_iterable = False
@@ -643,10 +671,15 @@ if __name__ == "__main__":
                 val_indices = indices[:args.val_samples]
                 train_indices = indices[args.val_samples:]
 
+                # 如果限制了 full_ds 的 max_samples = max_train + val_samples，
+                # 则 train_indices 的长度应接近 max_train；若数据真实总量不足，会更少。
                 train_ds = Subset(full_ds, train_indices)
                 val_ds = Subset(full_ds, val_indices)
 
                 Logger(f"数据集分割: 训练集 {len(train_ds):,} 样本, 验证集 {len(val_ds):,} 样本")
+                # 如果因为源数据不足，导致训练集小于期望的 max_samples，给出提示
+                if _max_train is not None and len(train_ds) < _max_train:
+                    Logger(f"提示: 可用训练样本数 {len(train_ds):,} 小于期望的 {int(_max_train):,}。请确认数据量是否足够 (max-samples + val_samples)。")
             else:
                 train_ds = full_ds
                 val_ds = None
