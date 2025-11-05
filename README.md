@@ -436,18 +436,24 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --min_branches_per_sample 1 \
   --max_total_tokens 0 \
   --data_path dataset/pretrain_hq_split.jsonl \
-  --max-samples 1000000 \
+  --max-samples 2048000 \
   --val_samples 500000 \
-  --val_interval 1000 \
-  --out_dir out/rope_pretrain \
+  --val_interval_samples 204800 \
+  --out_dir out/rope_pretrain_zh \
   --ddp
 ```
 
 **参数说明**：
 - `--rope_2d_ratio 0.5`: RoPE维度中用于branch的比例（50%用于2D，50%用于1D time）
-- `--max-samples 1000000`: 限制训练样本数量为100万（不设置则使用全部数据）
+- `--max-samples 2048000`: 限制训练样本数量为204.8万（不设置则使用全部数据）
 - `--val_samples 500000`: 从训练数据中随机抽取50万样本作为验证集
-- `--val_interval 1000`: 每1000个优化步进行一次验证
+- `--val_interval_samples 204800`: 每训练20.48万个样本进行一次验证（约每10%数据验证一次）
+
+**验证间隔设置**：
+- `--val_interval 1000`: 基于优化步数，每1000步验证一次
+- `--val_interval_samples 204800`: 基于样本数，每20.48万样本验证一次（推荐，更直观）
+- 两者可同时设置，任意条件满足都会触发验证
+- 设置为0则禁用该验证方式
 
 **rope_2d_ratio 调优建议**：
 - `0.25`: 25%用于branch，75%保留给time（适合time维度更重要的任务）

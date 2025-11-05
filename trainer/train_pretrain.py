@@ -155,6 +155,11 @@ def train_epoch(epoch, wandb):
     opt_loss_accum = 0.0
     opt_micro_count = 0
 
+    # 验证相关：跟踪上次验证时的样本数（用于基于样本数的验证间隔）
+    global last_val_samples
+    if epoch == 0:
+        last_val_samples = 0
+
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
 
@@ -293,9 +298,25 @@ def train_epoch(epoch, wandb):
                 opt_micro_count = 0
 
         # 验证
-        if val_loader is not None and args.val_interval > 0:
-            opt_step = (step + 1) // args.accumulation_steps
-            if opt_step % args.val_interval == 0 and (not ddp or dist.get_rank() == 0):
+        if val_loader is not None:
+            should_validate = False
+
+            # 方式1：基于优化步数的验证间隔
+            if args.val_interval > 0:
+                opt_step = (step + 1) // args.accumulation_steps
+                if opt_step % args.val_interval == 0:
+                    should_validate = True
+
+            # 方式2：基于样本数的验证间隔（优先级更高）
+            if args.val_interval_samples > 0:
+                # 在 DDP 模式下，使用全局样本数
+                current_samples = processed_samples * (dist.get_world_size() if ddp else 1)
+                if current_samples - last_val_samples >= args.val_interval_samples:
+                    should_validate = True
+                    last_val_samples = current_samples
+
+            if should_validate and (not ddp or dist.get_rank() == 0):
+                opt_step = (step + 1) // args.accumulation_steps
                 global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
                 validate(val_loader, epoch, global_step)
 
@@ -448,8 +469,12 @@ if __name__ == "__main__":
     # 验证集参数
     parser.add_argument("--val_samples", type=int, default=0,
                         help="验证集样本数（从训练数据中随机抽取）。设置为0则不使用验证集。默认: 0")
-    parser.add_argument("--val_interval", type=int, default=1000,
-                        help="验证间隔（优化步数）。每隔多少个优化步进行一次验证。默认: 1000")
+    parser.add_argument("--val_interval", type=int, default=0,
+                        help="验证间隔（优化步数）。每隔多少个优化步进行一次验证。设置为0则禁用基于步数的验证。默认: 0")
+    parser.add_argument("--val_interval_samples", type=int, default=0,
+                        help="验证间隔（样本数）。每训练多少个样本进行一次验证。"
+                             "例如: --val_interval_samples 204800 表示每训练20.48万个样本验证一次。"
+                             "此参数优先级高于--val_interval。设置为0则禁用。默认: 0")
 
     args = parser.parse_args()
 
@@ -459,7 +484,8 @@ if __name__ == "__main__":
         os.environ['HF_HUB_OFFLINE'] = '1'
 
     # 声明全局变量
-    global total_samples, effective_batch_size, iter_per_epoch, tokenizer, val_loader
+    global total_samples, effective_batch_size, iter_per_epoch, tokenizer, val_loader, last_val_samples
+    last_val_samples = 0  # 用于基于样本数的验证间隔
 
     if args.branch_slice_count is not None and args.branch_slice_count <= 0:
         raise ValueError("--branch_slice_count must be positive")
