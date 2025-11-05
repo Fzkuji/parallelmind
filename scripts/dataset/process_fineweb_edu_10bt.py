@@ -244,12 +244,8 @@ def process_dataset(
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
     print(f"Loading dataset: {dataset_name}/{subset}")
-
-    # 设置离线模式
     if offline:
-        import os
-        os.environ['HF_DATASETS_OFFLINE'] = '1'
-        os.environ['HF_HUB_OFFLINE'] = '1'
+        print("Using offline mode (cached dataset)")
 
     # 加载数据集（streaming模式）
     dataset = load_dataset(
@@ -392,6 +388,16 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # 如果启用离线模式，立即设置环境变量（在导入datasets之前）
+    if args.offline:
+        import os
+        os.environ['HF_DATASETS_OFFLINE'] = '1'
+        os.environ['HF_HUB_OFFLINE'] = '1'
+        # 禁用镜像站，使用本地缓存
+        if 'HF_ENDPOINT' in os.environ:
+            del os.environ['HF_ENDPOINT']
+        print("Offline mode enabled: using cached datasets only")
 
     process_dataset(
         dataset_name=args.dataset,
