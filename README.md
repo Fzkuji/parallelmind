@@ -440,7 +440,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --data_path dataset/pretrain_hq_split.jsonl \
   --max-samples 2048000 \
   --val_samples 500000 \
-  --val_interval_samples 204800 \
+  --val_interval_tokens 100000000 \
   --out_dir out/rope_pretrain_zh \
   --ddp
 ```
@@ -449,13 +449,13 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
 - `--rope_2d_ratio 0.5`: RoPE维度中用于branch的比例（50%用于2D，50%用于1D time）
 - `--max-samples 2048000`: 限制训练样本数量为204.8万（不设置则使用全部数据）
 - `--val_samples 500000`: 从训练数据中随机抽取50万样本作为验证集
-- `--val_interval_samples 204800`: 每训练20.48万个样本进行一次验证（约每10%数据验证一次）
-- `--val_max_branches_per_sample / --val_min_branches_per_sample`: 验证集分支控制。若两者都为4，则验证时每个sample固定4个分支；也可设为区间实现动态分支。
+- `--val_interval_tokens 100000000`: 每训练1亿个有效token验证一次（基于labels!=-100的token，DDP按全局累积）。
+- `--val_branches_per_sample` 或 `--val_max_branches_per_sample / --val_min_branches_per_sample`: 验证集分支控制。若设置 `--val_branches_per_sample 4` 或将 min/max 都设为 4，则验证时每个sample固定4个分支；也可设为区间实现动态分支。
 
 **验证间隔设置**：
 - `--val_interval 1000`: 基于优化步数，每1000步验证一次
-- `--val_interval_samples 204800`: 基于样本数，每20.48万样本验证一次（推荐，更直观）
-- 两者可同时设置，任意条件满足都会触发验证
+- `--val_interval_tokens 100000000`: 基于token数，每1亿个有效token验证一次（优先级最高，推荐）
+- 可与步数间隔同时设置，任意条件满足都会触发验证
 - 设置为0则禁用该验证方式
 
 **rope_2d_ratio 调优建议**：
