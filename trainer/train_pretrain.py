@@ -17,7 +17,8 @@ import torch
 import torch.distributed as dist
 from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Subset
+import random
 from contextlib import nullcontext
 from transformers import AutoTokenizer
 from parallel.columnar import build_columnar_causal_mask
@@ -95,6 +96,55 @@ def print_first_batch_sample(batch, tokenizer):
 
     Logger("=" * 80)
     Logger("")
+
+
+def validate(val_loader, epoch, global_step):
+    """在验证集上评估模型"""
+    model.eval()
+    loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+    total_loss = 0.0
+    total_batches = 0
+
+    Logger("\n" + "="*80)
+    Logger(f"开始验证 (Epoch {epoch + 1}, Step {global_step})...")
+
+    with torch.no_grad():
+        for batch in val_loader:
+            batch = {k: v.to(args.device) for k, v in batch.items()}
+            branch_counts = batch.pop("branch_counts")
+            column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
+
+            with ctx:
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=column_mask,
+                    position_ids=batch["position_ids"],
+                    pos2d=batch["pos2d"],
+                )
+                logits = outputs.logits.contiguous()
+                labels = batch["labels"].contiguous()
+
+                loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+                if hasattr(outputs, "aux_loss"):
+                    loss = loss + outputs.aux_loss
+
+            total_loss += loss.item()
+            total_batches += 1
+
+    avg_val_loss = total_loss / max(1, total_batches)
+    Logger(f"验证完成 - 平均loss: {avg_val_loss:.4f}")
+    Logger("="*80 + "\n")
+
+    model.train()
+
+    # 记录到 wandb
+    if wandb is not None and (not ddp or dist.get_rank() == 0):
+        wandb.log({
+            "val_loss": avg_val_loss,
+            "val_step": global_step,
+        })
+
+    return avg_val_loss
 
 
 def train_epoch(epoch, wandb):
@@ -242,6 +292,13 @@ def train_epoch(epoch, wandb):
                 opt_loss_accum = 0.0
                 opt_micro_count = 0
 
+        # 验证
+        if val_loader is not None and args.val_interval > 0:
+            opt_step = (step + 1) // args.accumulation_steps
+            if opt_step % args.val_interval == 0 and (not ddp or dist.get_rank() == 0):
+                global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
+                validate(val_loader, epoch, global_step)
+
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             model.eval()
             moe_path = '_moe' if lm_config.use_moe else ''
@@ -383,6 +440,13 @@ if __name__ == "__main__":
     parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
     parser.add_argument("--fpe_max_positions", type=int, default=512, help="Fourier PE最大位置数（branch数量一般很小，默认512）")
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
+
+    # 验证集参数
+    parser.add_argument("--val_samples", type=int, default=0,
+                        help="验证集样本数（从训练数据中随机抽取）。设置为0则不使用验证集。默认: 0")
+    parser.add_argument("--val_interval", type=int, default=1000,
+                        help="验证间隔（优化步数）。每隔多少个优化步进行一次验证。默认: 1000")
+
     args = parser.parse_args()
 
     # 如果启用离线模式，立即设置环境变量（在加载数据集之前）
@@ -391,7 +455,7 @@ if __name__ == "__main__":
         os.environ['HF_HUB_OFFLINE'] = '1'
 
     # 声明全局变量
-    global total_samples, effective_batch_size, iter_per_epoch, tokenizer
+    global total_samples, effective_batch_size, iter_per_epoch, tokenizer, val_loader
 
     if args.branch_slice_count is not None and args.branch_slice_count <= 0:
         raise ValueError("--branch_slice_count must be positive")
@@ -528,14 +592,35 @@ if __name__ == "__main__":
                 offline=getattr(args, 'offline', False),
             )
             is_iterable = True
+            val_ds = None  # IterableDataset 不支持简单的分割
         else:
             # 从本地文件加载 - 使用普通 Dataset
-            train_ds = ParallelPretrainDataset(
+            full_ds = ParallelPretrainDataset(
                 args.data_path,
                 max_samples=getattr(args, 'max_samples', None),
                 **dataset_kwargs
             )
             is_iterable = False
+
+            # 分割训练集和验证集
+            if args.val_samples > 0 and len(full_ds) > args.val_samples:
+                # 随机分割
+                total_size = len(full_ds)
+                indices = list(range(total_size))
+                random.shuffle(indices)
+
+                val_indices = indices[:args.val_samples]
+                train_indices = indices[args.val_samples:]
+
+                train_ds = Subset(full_ds, train_indices)
+                val_ds = Subset(full_ds, val_indices)
+
+                Logger(f"数据集分割: 训练集 {len(train_ds):,} 样本, 验证集 {len(val_ds):,} 样本")
+            else:
+                train_ds = full_ds
+                val_ds = None
+                if args.val_samples > 0:
+                    Logger(f"警告: 数据集大小 ({len(full_ds):,}) 小于等于验证集大小 ({args.val_samples:,})，不进行分割")
 
         collator._buffer.clear()
         drop_last = False if args.batch_by_samples or args.max_branches_per_sample is not None else True
@@ -558,6 +643,35 @@ if __name__ == "__main__":
             sampler=train_sampler,
             collate_fn=collator,
         )
+
+        # 创建验证集 DataLoader
+        if val_ds is not None:
+            # 为验证集创建一个新的 collator（避免与训练 collator 的 buffer 冲突）
+            val_collator = ParallelPretrainCollator(
+                tokenizer,
+                branches_per_sample=args.branches_per_sample,
+                pad_to=args.max_total_tokens if args.max_total_tokens > 0 else None,
+                max_branches_per_sample=args.max_branches_per_sample,
+                min_branches_per_sample=args.min_branches_per_sample,
+                random_time_offset=args.random_time_offset,
+                interleave_branches=True,
+                branch_stride=branch_stride,
+            )
+            if args.batch_by_samples:
+                val_collator.target_samples = args.batch_size
+
+            val_loader = DataLoader(
+                val_ds,
+                batch_size=effective_batch_size,
+                pin_memory=True,
+                drop_last=False,  # 验证集不丢弃最后一个batch
+                shuffle=False,  # 验证集不需要shuffle
+                num_workers=args.num_workers,
+                collate_fn=val_collator,
+            )
+            Logger(f"验证集 DataLoader 创建完成，共 {len(val_loader)} 个 batch")
+        else:
+            val_loader = None
 
         # IterableDataset 没有长度，只能在训练时统计
         if is_iterable:
