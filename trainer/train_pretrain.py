@@ -437,6 +437,10 @@ if __name__ == "__main__":
     # Position Encoding参数
     parser.add_argument("--pe", type=str, default='rope', choices=['rope', 'fpe'],
                         help="Position encoding type: 'rope' (RoPE 2D) or 'fpe' (Fourier PE + 1D RoPE)")
+    parser.add_argument("--rope_2d_ratio", type=float, default=0.5,
+                        help="RoPE 2D中用于branch维度的频率对比例 (0.0-1.0)。"
+                             "例如: 0.5表示50%%的频率维度用于2D位置编码(branch+time)，50%%用于1D(time only)。"
+                             "默认: 0.5")
     parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
     parser.add_argument("--fpe_max_positions", type=int, default=512, help="Fourier PE最大位置数（branch数量一般很小，默认512）")
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
@@ -492,6 +496,7 @@ if __name__ == "__main__":
         num_hidden_layers=args.num_hidden_layers,
         use_moe=args.use_moe,
         pe_type=args.pe,
+        rope_2d_ratio=args.rope_2d_ratio,
         fpe_theta=args.fpe_theta,
         fpe_max_positions=args.fpe_max_positions,
         fpe_learnable=args.fpe_learnable,

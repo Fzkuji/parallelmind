@@ -427,6 +427,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
 ```bash
 torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --pe rope \
+  --rope_2d_ratio 0.5 \
   --epochs 1 \
   --batch_size 4 \
   --accumulation_steps 1 \
@@ -435,9 +436,21 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --min_branches_per_sample 1 \
   --max_total_tokens 0 \
   --data_path dataset/pretrain_hq_split.jsonl \
+  --val_samples 500000 \
+  --val_interval 1000 \
   --out_dir out/rope_pretrain \
   --ddp
 ```
+
+**参数说明**：
+- `--rope_2d_ratio 0.5`: RoPE维度中用于branch的比例（50%用于2D，50%用于1D time）
+- `--val_samples 500000`: 从训练数据中随机抽取50万样本作为验证集
+- `--val_interval 1000`: 每1000个优化步进行一次验证
+
+**rope_2d_ratio 调优建议**：
+- `0.25`: 25%用于branch，75%保留给time（适合time维度更重要的任务）
+- `0.5`: 默认值，branch和time平衡（推荐）
+- `0.75`: 75%用于branch，25%给time（适合需要更强branch区分的场景）
 
 **推理测试**：
 

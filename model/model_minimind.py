@@ -29,6 +29,7 @@ class MiniMindConfig(PretrainedConfig):
             # Position encoding type for branch discrimination
             ####################################################
             pe_type: str = 'rope',  # 'rope' (RoPE 2D) or 'fpe' (Fourier PE)
+            rope_2d_ratio: float = 0.5,  # RoPE 2D中用于branch维度的频率对比例 (0.0-1.0)
             fpe_theta: float = 10000.0,  # Fourier PE的基础频率
             fpe_max_positions: int = 512,  # Fourier PE支持的最大位置（branch数量一般很小，512足够）
             fpe_learnable: bool = False,  # Fourier PE是否可学习
@@ -453,10 +454,11 @@ class MiniMindModel(nn.Module):
         # 根据pe_type选择位置编码方式
         if config.pe_type == 'rope':
             # 原有方式：RoPE 2D（branch + time都在RoPE中编码）
-            pair_indices = self._auto_pair_indices(0.5)
+            pair_indices = self._auto_pair_indices(config.rope_2d_ratio)
             patch_model_with_interleaved_2d_rope(self, pair_indices)
             self.fourier_pe = None
             print(f"✓ 使用 RoPE 2D 位置编码 (branch + time in RoPE)")
+            print(f"  - Branch 维度比例: {config.rope_2d_ratio:.1%} ({len(pair_indices)}/{rope_dim//2} 频率对)")
         elif config.pe_type == 'fpe':
             # 新方式：Fourier PE (branch) + 1D RoPE (time only)
             self.fourier_pe = FourierPositionEncoding(
