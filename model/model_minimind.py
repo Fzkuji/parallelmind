@@ -75,6 +75,8 @@ class MiniMindConfig(PretrainedConfig):
         # Position encoding type for branch discrimination
         ####################################################
         self.pe_type = pe_type
+        # Ratio of frequency pairs allocated to branch dimension in 2D RoPE
+        self.rope_2d_ratio = rope_2d_ratio
         self.fpe_theta = fpe_theta
         self.fpe_max_positions = fpe_max_positions
         self.fpe_learnable = fpe_learnable
