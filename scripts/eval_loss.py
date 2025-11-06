@@ -127,6 +127,8 @@ def _estimate_branches(args) -> int:
 def evaluate(model, tokenizer, args):
     # Build collator for evaluation with branch controls
     branch_stride = 1 if args.pe == 'fpe' else 128
+    avg_branches = _estimate_branches(args)
+
     val_collator = ParallelPretrainCollator(
         tokenizer,
         branches_per_sample=(args.val_branches_per_sample or args.branches_per_sample),
@@ -137,6 +139,9 @@ def evaluate(model, tokenizer, args):
         interleave_branches=True,
         branch_stride=branch_stride,
     )
+
+    if args.batch_by_samples:
+        val_collator.target_samples = max(1, args.batch_size)
 
     # Dataset
     if getattr(args, 'hf_dataset', None):
@@ -162,7 +167,7 @@ def evaluate(model, tokenizer, args):
         if args.eval_total_texts:
             desired_texts = int(args.eval_total_texts)
         elif args.eval_target_samples:
-            desired_texts = int(args.eval_target_samples) * _estimate_branches(args)
+            desired_texts = int(args.eval_target_samples) * avg_branches
         elif args.eval_samples:
             desired_texts = int(args.eval_samples)
         elif args.max_samples:
@@ -181,9 +186,14 @@ def evaluate(model, tokenizer, args):
         sampler = torch.utils.data.distributed.DistributedSampler(ds, shuffle=False, drop_last=False) if args.ddp else None
         shuffle = sampler is None
 
+    if args.batch_by_samples:
+        effective_batch_size = max(1, int(args.batch_size * avg_branches))
+    else:
+        effective_batch_size = args.batch_size
+
     loader = DataLoader(
         ds,
-        batch_size=args.batch_size,
+        batch_size=effective_batch_size,
         pin_memory=True,
         drop_last=False,
         shuffle=shuffle,
@@ -315,6 +325,7 @@ def main():
     parser.add_argument('--val_min_branches_per_sample', type=int, default=None)
     parser.add_argument('--random_time_offset', action='store_true', default=False)
     parser.add_argument('--no_random_time_offset', action='store_false', dest='random_time_offset')
+    parser.add_argument('--batch_by_samples', action='store_true', help='Interpret batch_size as number of samples (collated groups); DataLoader batch size will scale by平均分支数')
 
     args = parser.parse_args()
 

@@ -479,7 +479,7 @@ python scripts/parallel_generate.py \
 
 ```bash
 torchrun --nproc_per_node 8 scripts/eval_loss.py \
-  --model_path out/rope_pretrain/pretrain_512.pth \
+  --model_path out/rope_pretrain/pretrain_512_zh.pth \
   --data_path dataset/pretrain_hq_split.jsonl \
   --hidden_size 512 \
   --num_hidden_layers 8 \
