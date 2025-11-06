@@ -148,6 +148,7 @@ def validate(val_loader, epoch, global_step):
 
 
 def train_epoch(epoch, wandb):
+    global last_val_samples, last_val_tokens, trained_tokens
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
     processed_samples = 0  # 累计消耗的数据集样本数（对应 jsonl 行数 = branches 数量）
@@ -158,7 +159,6 @@ def train_epoch(epoch, wandb):
     epoch_tokens_since_log = 0
 
     # 验证相关：跟踪上次验证时的样本数（用于基于样本数的验证间隔）
-    global last_val_samples
     if epoch == 0:
         last_val_samples = 0
 
@@ -231,7 +231,6 @@ def train_epoch(epoch, wandb):
         # 记录到全局与本epoch窗口
         epoch_tokens_since_log += global_batch_tokens
         # 使用全局变量记录训练至今累计token数
-        global trained_tokens
         trained_tokens += global_batch_tokens
 
         # 记录优化步窗口统计（用未缩放loss，便于与acc=1对齐）
@@ -325,7 +324,6 @@ def train_epoch(epoch, wandb):
             if args.val_interval_tokens > 0:
                 current_tokens = trained_tokens
                 if (not ddp) or dist.get_rank() == 0:
-                    global last_val_tokens
                     if current_tokens - last_val_tokens >= args.val_interval_tokens:
                         should_validate = True
                         last_val_tokens = current_tokens
@@ -343,7 +341,6 @@ def train_epoch(epoch, wandb):
                 # 在 DDP 模式下，使用估算的全局样本数
                 current_samples = processed_samples * (dist.get_world_size() if ddp else 1)
                 if (not ddp) or dist.get_rank() == 0:
-                    global last_val_samples
                     if current_samples - last_val_samples >= args.val_interval_samples:
                         should_validate = True
                         last_val_samples = current_samples
@@ -364,11 +361,6 @@ def train_epoch(epoch, wandb):
                     validate(val_loader, epoch, global_step)
                 if ddp:
                     dist.barrier()
-
-            if should_validate and (not ddp or dist.get_rank() == 0):
-                opt_step = (step + 1) // args.accumulation_steps
-                global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
-                validate(val_loader, epoch, global_step)
 
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             model.eval()
