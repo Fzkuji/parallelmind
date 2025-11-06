@@ -10,6 +10,7 @@ if root_path not in sys.path:
     sys.path.insert(0, root_path)
 
 import argparse
+import json
 import time
 import math
 import warnings
@@ -32,6 +33,15 @@ warnings.filterwarnings('ignore')
 def Logger(content):
     if not ddp or dist.get_rank() == 0:
         print(content)
+
+
+def _append_jsonl(path: str, obj: dict):
+    """Append a JSON object as one line to a JSONL file. Fail-silent in distributed context."""
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def get_lr(current_step, total_steps, lr):
@@ -146,6 +156,14 @@ def validate(val_loader, epoch, global_step):
     if (not ddp) or dist.get_rank() == 0:
         Logger(f"验证完成 - 平均loss: {avg_val_loss:.4f}")
         Logger("="*80 + "\n")
+        # 记录到本地 JSONL 日志
+        if getattr(args, 'val_log_path', None):
+            _append_jsonl(args.val_log_path, {
+                "time": datetime.utcnow().isoformat(),
+                "epoch": int(epoch + 1),
+                "global_step": int(global_step),
+                "val_loss": float(avg_val_loss),
+            })
 
     model.train()
 
@@ -312,6 +330,27 @@ def train_epoch(epoch, wandb):
                     remaining_min)
 
                 Logger(log_msg)
+
+                # 写入训练 JSONL 日志（仅rank0）
+                if ((not ddp) or dist.get_rank() == 0) and getattr(args, 'train_log_path', None):
+                    try:
+                        world = dist.get_world_size() if ddp else 1
+                    except Exception:
+                        world = 1
+                    _append_jsonl(args.train_log_path, {
+                        "time": datetime.utcnow().isoformat(),
+                        "epoch": int(epoch + 1),
+                        "opt_step": int(opt_step),
+                        "processed_samples": int(global_processed_samples),
+                        "total_samples": (int(total_samples) if total_samples != float('inf') else None),
+                        "batch_size": int(batch["input_ids"].shape[0]),
+                        "seq_len": int(batch_seq_len),
+                        "loss": float(avg_unscaled_loss),
+                        "lr": float(optimizer.param_groups[-1]['lr']),
+                        "tokens_trained": int(trained_tokens),
+                        "remaining_min": int(remaining_min),
+                        "world_size": int(world),
+                    })
 
                 if (wandb is not None) and (not ddp or dist.get_rank() == 0):
                     # 与控制台一致的ETA估算（分钟）
@@ -625,6 +664,24 @@ if __name__ == "__main__":
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
+
+    # 本地 JSONL 日志目录：out/logs/{YYYYmmdd-HHMMSS}-{hash8}
+    try:
+        cmd_str = " ".join(sys.argv)
+        run_hash = hashlib.md5(cmd_str.encode("utf-8")).hexdigest()[:8]
+        run_ts = time.strftime('%Y%m%d-%H%M%S')
+        base_logs_dir = os.path.join(root_path, 'out', 'logs')
+        args.log_run_dir = os.path.join(base_logs_dir, f"{run_ts}-{run_hash}")
+        os.makedirs(args.log_run_dir, exist_ok=True)
+        args.train_log_path = os.path.join(args.log_run_dir, 'train_loss.jsonl')
+        args.val_log_path = os.path.join(args.log_run_dir, 'val_loss.jsonl')
+        # 保存一次运行的命令行，方便区分不同运行
+        with open(os.path.join(args.log_run_dir, 'run_cmd.txt'), 'w', encoding='utf-8') as f:
+            f.write(cmd_str + "\n")
+    except Exception:
+        args.log_run_dir = None
+        args.train_log_path = None
+        args.val_log_path = None
 
     if device_type == "cpu":
         ctx = nullcontext()

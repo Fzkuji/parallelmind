@@ -3,6 +3,7 @@ import sys
 import argparse
 import math
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader, Subset
 
@@ -18,8 +19,33 @@ from parallel_data.parallel_collator import ParallelPretrainCollator
 from parallel.columnar import build_columnar_causal_mask
 
 
-def Logger(msg: str):
-    print(msg)
+def Logger(msg: str, *, rank0_only: bool = False, ddp: bool = False):
+    if not ddp:
+        print(msg)
+    else:
+        if (not rank0_only) or (dist.get_rank() == 0):
+            print(msg)
+
+
+def _is_ddp_env() -> bool:
+    try:
+        return int(os.environ.get("RANK", "-1")) != -1
+    except Exception:
+        return False
+
+
+def init_distributed_if_needed(args):
+    """Initialize torch.distributed if running under torchrun and set device."""
+    ddp = _is_ddp_env()
+    args.ddp = ddp
+    if not ddp:
+        return ddp
+
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    torch.cuda.set_device(local_rank)
+    args.device = f"cuda:{local_rank}"
+    dist.init_process_group(backend="nccl")
+    return ddp
 
 
 def load_model_and_tokenizer(args):
@@ -32,7 +58,7 @@ def load_model_and_tokenizer(args):
 
     # Transformers directory path
     if os.path.isdir(args.model_path) and os.path.exists(os.path.join(args.model_path, 'config.json')):
-        Logger(f"从 Transformers 目录加载模型: {args.model_path}")
+        Logger(f"从 Transformers 目录加载模型: {args.model_path}", rank0_only=True, ddp=args.ddp)
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(args.model_path, trust_remote_code=True)
         model = model.to(device).eval()
@@ -42,7 +68,7 @@ def load_model_and_tokenizer(args):
     if not os.path.exists(args.model_path):
         raise FileNotFoundError(f"找不到模型权重: {args.model_path}")
 
-    Logger(f"从 checkpoint 加载模型: {args.model_path}")
+    Logger(f"从 checkpoint 加载模型: {args.model_path}", rank0_only=True, ddp=args.ddp)
     checkpoint = torch.load(args.model_path, map_location='cpu')
 
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -80,9 +106,9 @@ def load_model_and_tokenizer(args):
     model = MiniMindForCausalLM(lm_config)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
-        Logger(f"注意：有缺失权重未加载（{len(missing)} 项），例如: {missing[:5]}")
+        Logger(f"注意：有缺失权重未加载（{len(missing)} 项），例如: {missing[:5]}", rank0_only=True, ddp=args.ddp)
     if unexpected:
-        Logger(f"注意：有未使用的权重（{len(unexpected)} 项），例如: {unexpected[:5]}")
+        Logger(f"注意：有未使用的权重（{len(unexpected)} 项），例如: {unexpected[:5]}", rank0_only=True, ddp=args.ddp)
 
     model.resize_token_embeddings(len(tokenizer))
     model = model.to(device).eval()
@@ -131,13 +157,21 @@ def evaluate(model, tokenizer, args):
             ds = Subset(ds, indices[: args.eval_samples])
 
     # DataLoader
+    if is_iterable:
+        sampler = None
+        shuffle = False
+    else:
+        sampler = torch.utils.data.distributed.DistributedSampler(ds, shuffle=False, drop_last=False) if args.ddp else None
+        shuffle = sampler is None
+
     loader = DataLoader(
         ds,
         batch_size=args.batch_size,
         pin_memory=True,
         drop_last=False,
-        shuffle=False,
+        shuffle=shuffle,
         num_workers=args.num_workers,
+        sampler=sampler,
         collate_fn=val_collator,
     )
 
@@ -154,7 +188,7 @@ def evaluate(model, tokenizer, args):
         from contextlib import nullcontext
         autocast_ctx = nullcontext()
 
-    Logger("开始评估...")
+    Logger("开始评估...", rank0_only=True, ddp=args.ddp)
     for batch in loader:
         batch = {k: v.to(device) for k, v in batch.items()}
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(device)
@@ -184,9 +218,17 @@ def evaluate(model, tokenizer, args):
         if args.max_batches > 0 and total_batches >= args.max_batches:
             break
 
+    # 在 DDP 下聚合所有 rank 的统计
+    if args.ddp:
+        stats = torch.tensor([total_loss, total_batches, total_tokens], device=device, dtype=torch.float64)
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        total_loss = float(stats[0].item())
+        total_batches = int(stats[1].item())
+        total_tokens = int(stats[2].item())
+
     avg_loss = total_loss / max(1, total_batches)
     ppl = math.exp(avg_loss) if avg_loss < 20 else float('inf')
-    Logger(f"评估完成: 平均loss={avg_loss:.4f}, 近似ppl={ppl:.2f}, 批次数={total_batches}, 有效tokens={total_tokens}")
+    Logger(f"评估完成: 平均loss={avg_loss:.4f}, 近似ppl={ppl:.2f}, 批次数={total_batches}, 有效tokens={total_tokens}", rank0_only=True, ddp=args.ddp)
     return avg_loss
 
 
@@ -241,13 +283,24 @@ def main():
 
     args = parser.parse_args()
 
+    # DDP 初始化（若通过 torchrun 启动会生效）
+    init_distributed_if_needed(args)
+
     model, tokenizer = load_model_and_tokenizer(args)
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    Logger(f"模型可训练参数量：{total_params / 1e6:.3f} 百万")
+    if (not args.ddp) or dist.get_rank() == 0:
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        Logger(f"模型可训练参数量：{total_params / 1e6:.3f} 百万", rank0_only=True, ddp=args.ddp)
 
     evaluate(model, tokenizer, args)
+
+    # 优雅退出 DDP
+    if args.ddp:
+        try:
+            dist.barrier()
+            dist.destroy_process_group()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':
     main()
-
