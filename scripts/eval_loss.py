@@ -150,7 +150,7 @@ def evaluate(model, tokenizer, args):
             hf_subset=getattr(args, 'hf_subset', None),
             hf_split=getattr(args, 'hf_split', 'train'),
             text_column=getattr(args, 'text_column', None),
-            max_samples=(args.eval_total_texts or (args.eval_target_samples * _estimate_branches(args)) or getattr(args, 'max_samples', None)),
+            max_samples=(args.eval_total_texts or args.eval_target_samples or getattr(args, 'max_samples', None)),
             chunk_length=getattr(args, 'chunk_length', None),
             tokenizer=tokenizer if getattr(args, 'chunk_length', None) else None,
             offline=getattr(args, 'offline', False),
@@ -167,7 +167,7 @@ def evaluate(model, tokenizer, args):
         if args.eval_total_texts:
             desired_texts = int(args.eval_total_texts)
         elif args.eval_target_samples:
-            desired_texts = int(args.eval_target_samples) * avg_branches
+            desired_texts = int(args.eval_target_samples)
         elif args.eval_samples:
             desired_texts = int(args.eval_samples)
         elif args.max_samples:
@@ -216,7 +216,7 @@ def evaluate(model, tokenizer, args):
         autocast_ctx = nullcontext()
 
     Logger("开始评估...", rank0_only=True, ddp=args.ddp)
-    samples_done = 0  # 全局已评估的sample数量（聚合所有GPU）
+    samples_done = 0  # 全局已评估的原始branch数量
 
     for batch in loader:
         batch = {k: v.to(device) for k, v in batch.items()}
@@ -241,8 +241,11 @@ def evaluate(model, tokenizer, args):
         total_loss += loss.item()
         total_batches += 1
 
-        # 统计本批sample数（collator返回的sample数量 = branch_counts长度）
-        local_samples = int(batch["branch_counts"].numel()) if "branch_counts" in batch else 0
+        # 统计本批原始branch数量
+        if "branch_counts" in batch:
+            local_samples = int(batch["branch_counts"].sum().item())
+        else:
+            local_samples = 0
         if args.ddp:
             tmp = torch.tensor([local_samples], device=device, dtype=torch.long)
             dist.all_reduce(tmp, op=dist.ReduceOp.SUM)
@@ -253,7 +256,7 @@ def evaluate(model, tokenizer, args):
 
         if total_batches % max(1, args.log_interval) == 0:
             Logger(
-                f"samples_processed {samples_done} | batch {total_batches}: loss={loss.item():.4f}, tokens={valid}",
+                f"branches_processed {samples_done} | batch {total_batches}: loss={loss.item():.4f}, tokens={valid}",
                 rank0_only=True,
                 ddp=args.ddp,
             )
