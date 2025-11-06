@@ -116,6 +116,14 @@ def load_model_and_tokenizer(args):
 
 
 @torch.no_grad()
+def _estimate_branches(args) -> int:
+    if args.val_max_branches_per_sample is not None and args.val_min_branches_per_sample is not None:
+        return max(1, int(round((args.val_min_branches_per_sample + args.val_max_branches_per_sample) / 2)))
+    if args.val_branches_per_sample is not None:
+        return max(1, int(args.val_branches_per_sample))
+    return max(1, int(args.branches_per_sample))
+
+
 def evaluate(model, tokenizer, args):
     # Build collator for evaluation with branch controls
     branch_stride = 1 if args.pe == 'fpe' else 128
@@ -137,7 +145,7 @@ def evaluate(model, tokenizer, args):
             hf_subset=getattr(args, 'hf_subset', None),
             hf_split=getattr(args, 'hf_split', 'train'),
             text_column=getattr(args, 'text_column', None),
-            max_samples=getattr(args, 'max_samples', None),
+            max_samples=(args.eval_total_texts or (args.eval_target_samples * _estimate_branches(args)) or getattr(args, 'max_samples', None)),
             chunk_length=getattr(args, 'chunk_length', None),
             tokenizer=tokenizer if getattr(args, 'chunk_length', None) else None,
             offline=getattr(args, 'offline', False),
@@ -146,15 +154,24 @@ def evaluate(model, tokenizer, args):
     else:
         ds = ParallelPretrainDataset(
             data_path=args.data_path,
-            max_samples=args.max_samples,
+            max_samples=None,  # 先读全量，下面根据目标子集裁剪
         )
         is_iterable = False
-        if args.eval_samples > 0 and len(ds) > args.eval_samples:
-            # Use a random subset for evaluation if requested
+        # 目标子集优先顺序：eval_total_texts > eval_target_samples*branches > eval_samples(兼容老参数) > max_samples
+        desired_texts = 0
+        if args.eval_total_texts:
+            desired_texts = int(args.eval_total_texts)
+        elif args.eval_target_samples:
+            desired_texts = int(args.eval_target_samples) * _estimate_branches(args)
+        elif args.eval_samples:
+            desired_texts = int(args.eval_samples)
+        elif args.max_samples:
+            desired_texts = int(args.max_samples)
+        if desired_texts and len(ds) > desired_texts:
             import random as _random
             indices = list(range(len(ds)))
             _random.shuffle(indices)
-            ds = Subset(ds, indices[: args.eval_samples])
+            ds = Subset(ds, indices[: desired_texts])
 
     # DataLoader
     if is_iterable:
@@ -189,6 +206,8 @@ def evaluate(model, tokenizer, args):
         autocast_ctx = nullcontext()
 
     Logger("开始评估...", rank0_only=True, ddp=args.ddp)
+    samples_done = 0  # 全局已评估的sample数量（聚合所有GPU）
+
     for batch in loader:
         batch = {k: v.to(device) for k, v in batch.items()}
         column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(device)
@@ -212,8 +231,22 @@ def evaluate(model, tokenizer, args):
         total_loss += loss.item()
         total_batches += 1
 
+        # 统计本批sample数（collator返回的sample数量 = branch_counts长度）
+        local_samples = int(batch["branch_counts"].numel()) if "branch_counts" in batch else 0
+        if args.ddp:
+            tmp = torch.tensor([local_samples], device=device, dtype=torch.long)
+            dist.all_reduce(tmp, op=dist.ReduceOp.SUM)
+            global_samples = int(tmp.item())
+        else:
+            global_samples = local_samples
+        samples_done += global_samples
+
         if total_batches % max(1, args.log_interval) == 0:
-            Logger(f"batch {total_batches}: loss={loss.item():.4f}, tokens={valid}")
+            Logger(
+                f"samples_processed {samples_done} | batch {total_batches}: loss={loss.item():.4f}, tokens={valid}",
+                rank0_only=True,
+                ddp=args.ddp,
+            )
 
         if args.max_batches > 0 and total_batches >= args.max_batches:
             break
@@ -269,7 +302,9 @@ def main():
     parser.add_argument('--max_total_tokens', type=int, default=4096, help='Pad/truncate per sample sequence length; set 0 to disable pad_to')
     parser.add_argument('--log_interval', type=int, default=50)
     parser.add_argument('--max_batches', type=int, default=0, help='Stop after N batches (0=all)')
-    parser.add_argument('--eval_samples', type=int, default=0, help='For local dataset: randomly subsample this many samples')
+    parser.add_argument('--eval_samples', type=int, default=0, help='DEPRECATED (raw texts). For map-style dataset: randomly subsample this many raw texts')
+    parser.add_argument('--eval_target_samples', type=int, default=0, help='Target number of evaluation samples (collated). Will estimate required raw texts by multiplying avg branches per sample')
+    parser.add_argument('--eval_total_texts', type=int, default=0, help='Directly limit number of raw texts to load from dataset (highest priority)')
 
     # branch controls for evaluation
     parser.add_argument('--branches_per_sample', type=int, default=8)

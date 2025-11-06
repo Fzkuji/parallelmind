@@ -478,19 +478,22 @@ python scripts/parallel_generate.py \
 **Loss评估（验证保存的模型）**：
 
 ```bash
-python scripts/eval_loss.py \
+torchrun --nproc_per_node 8 scripts/eval_loss.py \
   --model_path out/rope_pretrain/pretrain_512.pth \
   --data_path dataset/pretrain_hq_split.jsonl \
   --hidden_size 512 \
   --num_hidden_layers 8 \
   --pe rope \
   --rope_2d_ratio 0.5 \
-  --batch_size 4 \
+  --eval_target_samples 2048000 \
+  --batch_size 64 \
   --val_max_branches_per_sample 4 \
   --val_min_branches_per_sample 4
 ```
 
-说明：将 `--val_max_branches_per_sample` 与 `--val_min_branches_per_sample` 设为相同值可固定验证分支数；设置为区间（如 1~16）可测试不同分支数量下的loss。
+说明：
+- 将 `--val_max_branches_per_sample` 与 `--val_min_branches_per_sample` 设为相同值可固定验证分支数；设置为区间（如 1~16）可测试不同分支数量下的loss。
+- `--eval_target_samples 50000`：按“样本”（collator 打包后的 sample，包含多分支）计数，估算所需原始文本数为 目标样本数 × 平均分支数，再跑完整评估；更直观，不需手动估算原始文本条数。
 
 **特点**：
 - **改动最小**：与原有MiniMind架构完全兼容
