@@ -220,11 +220,14 @@ def train_epoch(epoch, wandb):
 
         scaler.scale(loss).backward()
 
-        # 累计全局token计数（按DDP进程总和口径）
+        # 累计全局token计数（按DDP进程总和口径）。
+        # 使用all_reduce聚合每个rank的有效token，确保各rank上的累计值一致。
+        global_batch_tokens = batch_valid_tokens
         if ddp:
-            global_batch_tokens = batch_valid_tokens * dist.get_world_size()
-        else:
-            global_batch_tokens = batch_valid_tokens
+            import torch as _torch
+            _t = _torch.tensor([batch_valid_tokens], device=args.device, dtype=_torch.long)
+            dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+            global_batch_tokens = int(_t.item())
         # 记录到全局与本epoch窗口
         epoch_tokens_since_log += global_batch_tokens
         # 使用全局变量记录训练至今累计token数
@@ -315,29 +318,52 @@ def train_epoch(epoch, wandb):
 
         # 验证
         if val_loader is not None:
+            # 先本地计算，再在DDP下由rank0统一广播是否验证，避免不同rank条件不一致导致的死锁
             should_validate = False
 
             # 方式0：基于token数的验证间隔（最高优先级）
             if args.val_interval_tokens > 0:
                 current_tokens = trained_tokens
-                global last_val_tokens
-                if current_tokens - last_val_tokens >= args.val_interval_tokens:
-                    should_validate = True
-                    last_val_tokens = current_tokens
+                if (not ddp) or dist.get_rank() == 0:
+                    global last_val_tokens
+                    if current_tokens - last_val_tokens >= args.val_interval_tokens:
+                        should_validate = True
+                        last_val_tokens = current_tokens
 
             # 方式1：基于优化步数的验证间隔
-            if args.val_interval > 0:
+            if args.val_interval > 0 and not should_validate:
                 opt_step = (step + 1) // args.accumulation_steps
-                if opt_step % args.val_interval == 0:
-                    should_validate = True
+                # 使用rank0做决策，避免步数/样本不一致
+                if (not ddp) or dist.get_rank() == 0:
+                    if opt_step % args.val_interval == 0:
+                        should_validate = True
 
-            # 方式2：基于样本数的验证间隔（优先级更高）
-            if args.val_interval_samples > 0:
-                # 在 DDP 模式下，使用全局样本数
+            # 方式2：基于样本数的验证间隔（优先级次之）
+            if args.val_interval_samples > 0 and not should_validate:
+                # 在 DDP 模式下，使用估算的全局样本数
                 current_samples = processed_samples * (dist.get_world_size() if ddp else 1)
-                if current_samples - last_val_samples >= args.val_interval_samples:
-                    should_validate = True
-                    last_val_samples = current_samples
+                if (not ddp) or dist.get_rank() == 0:
+                    global last_val_samples
+                    if current_samples - last_val_samples >= args.val_interval_samples:
+                        should_validate = True
+                        last_val_samples = current_samples
+
+            # 在DDP下将rank0的should_validate广播给所有rank，确保一致进入/跳过验证
+            if ddp:
+                import torch as _torch
+                flag = _torch.tensor([1 if should_validate else 0], device=args.device, dtype=_torch.int)
+                dist.broadcast(flag, src=0)
+                should_validate = bool(int(flag.item()))
+
+            if should_validate:
+                if ddp:
+                    dist.barrier()
+                if (not ddp) or dist.get_rank() == 0:
+                    opt_step = (step + 1) // args.accumulation_steps
+                    global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
+                    validate(val_loader, epoch, global_step)
+                if ddp:
+                    dist.barrier()
 
             if should_validate and (not ddp or dist.get_rank() == 0):
                 opt_step = (step + 1) // args.accumulation_steps

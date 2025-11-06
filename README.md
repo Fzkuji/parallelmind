@@ -437,7 +437,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --val_max_branches_per_sample 4 \
   --val_min_branches_per_sample 4 \
   --max_total_tokens 0 \
-  --data_path dataset/pretrain_hq_split.jsonl \
+  --data_path dataset/pretrain_512.jsonl \
   --max-samples 2048000 \
   --val_samples 500000 \
   --val_interval_tokens 100000000 \
