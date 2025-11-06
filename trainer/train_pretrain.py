@@ -99,19 +99,20 @@ def print_first_batch_sample(batch, tokenizer):
 
 
 def validate(val_loader, epoch, global_step):
-    """在验证集上评估模型"""
+    """在验证集上评估模型（DDP：各rank均参与计算并做全局聚合）"""
     model.eval()
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-    total_loss = 0.0
-    total_batches = 0
+    rank_loss = 0.0
+    rank_batches = 0
 
-    Logger("\n" + "="*80)
-    Logger(f"开始验证 (Epoch {epoch + 1}, Step {global_step})...")
+    if (not ddp) or dist.get_rank() == 0:
+        Logger("\n" + "="*80)
+        Logger(f"开始验证 (Epoch {epoch + 1}, Step {global_step})...")
 
     with torch.no_grad():
         for batch in val_loader:
             batch = {k: v.to(args.device) for k, v in batch.items()}
-            branch_counts = batch.pop("branch_counts")
+            _ = batch.pop("branch_counts")
             column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
 
             with ctx:
@@ -128,17 +129,28 @@ def validate(val_loader, epoch, global_step):
                 if hasattr(outputs, "aux_loss"):
                     loss = loss + outputs.aux_loss
 
-            total_loss += loss.item()
-            total_batches += 1
+            rank_loss += float(loss.item())
+            rank_batches += 1
 
-    avg_val_loss = total_loss / max(1, total_batches)
-    Logger(f"验证完成 - 平均loss: {avg_val_loss:.4f}")
-    Logger("="*80 + "\n")
+    # 全局聚合
+    if ddp:
+        import torch as _torch
+        t = _torch.tensor([rank_loss, float(rank_batches)], device=args.device, dtype=_torch.float64)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        total_loss, total_batches = t[0].item(), int(t[1].item())
+    else:
+        total_loss, total_batches = rank_loss, rank_batches
+
+    avg_val_loss = (total_loss / max(1, total_batches)) if total_batches > 0 else 0.0
+
+    if (not ddp) or dist.get_rank() == 0:
+        Logger(f"验证完成 - 平均loss: {avg_val_loss:.4f}")
+        Logger("="*80 + "\n")
 
     model.train()
 
-    # 记录到 wandb
-    if wandb is not None and (not ddp or dist.get_rank() == 0):
+    # 记录到 wandb（仅rank0）
+    if wandb is not None and ((not ddp) or dist.get_rank() == 0):
         wandb.log({
             "val_loss": avg_val_loss,
             "val_step": global_step,
@@ -353,14 +365,10 @@ def train_epoch(epoch, wandb):
                 should_validate = bool(int(flag.item()))
 
             if should_validate:
-                if ddp:
-                    dist.barrier()
-                if (not ddp) or dist.get_rank() == 0:
-                    opt_step = (step + 1) // args.accumulation_steps
-                    global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
-                    validate(val_loader, epoch, global_step)
-                if ddp:
-                    dist.barrier()
+                opt_step = (step + 1) // args.accumulation_steps
+                global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
+                # 所有rank同时验证并做全局聚合，避免其它rank在barrier处等待导致NCCL watchdog超时
+                validate(val_loader, epoch, global_step)
 
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             model.eval()
@@ -779,7 +787,8 @@ if __name__ == "__main__":
                 branch_stride=branch_stride,
             )
             if args.batch_by_samples:
-                val_collator.target_samples = args.batch_size
+                # 验证目标样本数 = 训练的2倍
+                val_collator.target_samples = max(1, args.batch_size * 2)
 
             # 记录验证分支配置
             if val_max_branches is not None:
@@ -787,9 +796,11 @@ if __name__ == "__main__":
             else:
                 Logger(f"验证分支配置: 固定 {val_branches} 个分支/样本")
 
+            # 验证批大小 = 训练effective_batch_size的2倍
+            _val_effective_batch_size = max(1, effective_batch_size * 2)
             val_loader = DataLoader(
                 val_ds,
-                batch_size=effective_batch_size,
+                batch_size=_val_effective_batch_size,
                 pin_memory=True,
                 drop_last=False,  # 验证集不丢弃最后一个batch
                 shuffle=False,  # 验证集不需要shuffle
