@@ -162,7 +162,7 @@ def evaluate(model, tokenizer, args):
             max_samples=None,  # 先读全量，下面根据目标子集裁剪
         )
         is_iterable = False
-        # 目标子集优先顺序：eval_total_texts > eval_target_samples*branches > eval_samples(兼容老参数) > max_samples
+        # 目标子集优先顺序：eval_total_texts > eval_target_samples > eval_samples(兼容老参数) > max_samples
         desired_texts = 0
         if args.eval_total_texts:
             desired_texts = int(args.eval_total_texts)
@@ -316,7 +316,7 @@ def main():
     parser.add_argument('--log_interval', type=int, default=50)
     parser.add_argument('--max_batches', type=int, default=0, help='Stop after N batches (0=all)')
     parser.add_argument('--eval_samples', type=int, default=0, help='DEPRECATED (raw texts). For map-style dataset: randomly subsample this many raw texts')
-    parser.add_argument('--eval_target_samples', type=int, default=0, help='Target number of evaluation samples (collated). Will estimate required raw texts by multiplying avg branches per sample')
+    parser.add_argument('--eval_target_samples', type=int, default=0, help='Target number of raw texts/branches to evaluate (global total across all GPUs)')
     parser.add_argument('--eval_total_texts', type=int, default=0, help='Directly limit number of raw texts to load from dataset (highest priority)')
 
     # branch controls for evaluation

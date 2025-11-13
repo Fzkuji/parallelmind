@@ -495,7 +495,7 @@ torchrun --nproc_per_node 8 scripts/eval_loss.py \
 
 说明：
 - 将 `--val_max_branches_per_sample` 与 `--val_min_branches_per_sample` 设为相同值可固定验证分支数；设置为区间（如 1~16）可测试不同分支数量下的loss。
-- `--eval_target_samples 50000`：按“样本”（collator 打包后的 sample，包含多分支）计数，估算所需原始文本数为 目标样本数 × 平均分支数，再跑完整评估；更直观，不需手动估算原始文本条数。
+- `--eval_target_samples 50000`：直接限制“原始 JSONL 行 / branch”的数量（全局、含多卡），不用再手动换算 sample 数；脚本会自动按平均分支数把这些文本拼成 sample 并跑完全程。
 
 **特点**：
 - **改动最小**：与原有MiniMind架构完全兼容
@@ -1157,6 +1157,34 @@ python train_lora.py
 
 此时【基础模型+LoRA模型】即可获得医疗场景模型增强的能力，相当于为基础模型增加了LoRA外挂，这个过程并不损失基础模型的本身能力。
 我们可以通过`eval_model.py`进行模型评估测试。
+
+#### HuggingFace 模型 + 2D RoPE 的 LoRA 微调
+
+若想直接在 HuggingFace 的基础模型（例如 Qwen/Qwen2、Llama 等）上复用 MiniMind 的 2D RoPE 设计并继续 LoRA 微调，可以使用 `trainer/train_hf_lora.py`：
+
+```bash
+torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
+  --base_model Qwen/Qwen2-0.5B-Instruct \
+  --tokenizer_path Qwen/Qwen2-0.5B-Instruct \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --lora_name qwen2_medical \
+  --lora_rank 16 \
+  --epochs 3 \
+  --batch_size 16 \
+  --batch_by_samples \
+  --branches_per_sample 4 \
+  --max_branches_per_sample 8 \
+  --patch_rope \
+  --rope_2d_ratio 0.5 \
+  --max_total_tokens 0 \
+  --save_interval 200
+```
+
+- `--patch_rope / --rope_2d_ratio`：一键将 HuggingFace 模型的 RoPE 替换成 MiniMind 的 Interleaved 2D 版本；若想关闭可加 `--no_patch_rope`。
+- `--base_model / --tokenizer_path`：任意 CausalLM 模型或本地路径，LoRA 权重会保存在 `out/lora/<lora_name>_<tag>.pth` 中。
+- `--load_lora`：支持恢复已有 LoRA 继续训练；`--lora_rank`、`--epochs`、`--batch_size` 等参数与 `train_lora.py` 一致。
+- Parallel 数据相关：`--branches_per_sample / --max_branches_per_sample / --batch_by_samples` 用于控制 collator 打包策略；`--max_total_tokens 0` 表示按真实长度运行，不额外 pad。
+- 训练完成后，可继续用 `eval_model.py` 挂载 LoRA 权重进行推理，或者直接在 HuggingFace pipeline 中加载 LoRA。
 
 ```bash
 # 注意：model_mode即选择基础模型的类型，这和train_lora是基于哪个模型训练的相关，确保统一即可。

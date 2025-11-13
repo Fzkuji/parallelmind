@@ -19,9 +19,17 @@ class LoRA(nn.Module):
 
 
 def apply_lora(model, rank=8):
+    try:
+        device = model.device
+    except AttributeError:
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear) and module.weight.shape[0] == module.weight.shape[1]:
-            lora = LoRA(module.weight.shape[0], module.weight.shape[1], rank=rank).to(model.device)
+            lora = LoRA(module.weight.shape[0], module.weight.shape[1], rank=rank).to(device)
             setattr(module, "lora", lora)
             original_forward = module.forward
 
