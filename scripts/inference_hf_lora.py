@@ -224,11 +224,9 @@ def generate_text(
             eos_token_id=tokenizer.eos_token_id,
         )
 
-    # 解码输出
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    # 提取新生成的部分
-    response = generated_text[len(prompt):].strip()
+    output_tokens = outputs[0]
+    generated_tokens = output_tokens[input_ids.shape[-1]:]
+    response = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
     print(f"{'=' * 80}")
     print(f"生成结果:")
@@ -292,8 +290,9 @@ def interactive_chat(
                     eos_token_id=tokenizer.eos_token_id,
                 )
 
-            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response = generated_text[len(prompt):].strip()
+            output_tokens = outputs[0]
+            generated_tokens = output_tokens[input_ids.shape[-1]:]
+            response = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
             print(f"Assistant: {response}\n")
 
