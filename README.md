@@ -1238,9 +1238,9 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 统一使用 `scripts/parallel_generate.py` 进行推理，只需调整 `--branches_per_sample` 即可控制一次要回答的问题数量：
 
 ```bash
-torchrun --nproc_per_node 8 scripts/parallel_generate.py \
+python scripts/parallel_generate.py \
   --hf_base_model Qwen/Qwen2.5-1.5B-Instruct \
-  --lora_path out/lora/qwen2_lora_final.pth \
+  --lora_path out/lora/hf_lora_hf_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
   --branches_per_sample 3 \

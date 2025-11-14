@@ -21,6 +21,7 @@ from parallel.columnar import (
     set_rope_pos2d,
 )
 from scripts.inference_hf_lora import load_model_with_lora
+from scripts.utils.layout_debug import dump_branch_layout
 
 
 def load_prompts(args) -> List[Any]:
@@ -301,6 +302,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         align_to=align_mode,
         interleave_branches=(args.mode == "pretrain"),
     )
+
+    if getattr(args, "print_layout", False):
+        dump_branch_layout(layout, tokenizer, max_tokens=getattr(args, "layout_max_tokens", 256))
 
     if debug:
         print(f"\n=== Layout Info ===")
@@ -660,6 +664,8 @@ def main():
     parser.add_argument("--chat_template", action="store_true")
     parser.add_argument("--mode", choices=["sft", "pretrain"], default="sft", help="推理模式：sft(微调) 或 pretrain(策划师预训练)")
     parser.add_argument("--debug", action="store_true", help="启用调试输出")
+    parser.add_argument("--print_layout", action="store_true", help="打印列式布局的 token 时间/branch 信息")
+    parser.add_argument("--layout_max_tokens", type=int, default=256, help="打印布局时的最大token数")
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     parser.add_argument("--pe", type=str, choices=['rope', 'fpe'], default=None, help="位置编码类型（不指定则自动检测）")
     parser.add_argument("--out_path", type=str, default="", help="生成结果保存为 JSONL（分布式会自动按 rank 拆分）")
