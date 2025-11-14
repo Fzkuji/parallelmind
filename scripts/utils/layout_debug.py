@@ -30,7 +30,6 @@ def dump_branch_layout(
     if seq_len == 0:
         return
 
-    row: list[str] = []
     for idx in range(limit):
         if attn[idx].item() <= 0:
             continue
@@ -40,12 +39,10 @@ def dump_branch_layout(
         time_val = int(pos2d[1].item())
         branch_idx = branch_lookup.get(branch_pos, -1)
         token_text = tokenizer.decode([token_id]).replace("\n", "\\n")
-        row.append(f"[t={time_val:4d}] idx={idx:4d} b={branch_idx:2d} id={token_id:5d} '{token_text}'")
-        if len(row) == 4:
-            print("  " + " | ".join(row))
-            row = []
-    if row:
-        print("  " + " | ".join(row))
+        print(
+            f"  [t={time_val:4d}] idx={idx:4d} branch={branch_idx:2d} pos={branch_pos:4d} "
+            f"id={token_id:5d} text='{token_text}'"
+        )
 
     if seq_len > limit:
         print(f"  ... ({seq_len - limit} more tokens not shown)")
@@ -64,24 +61,17 @@ def dump_generated_sequences(
             print(f"  Branch {idx}: (no tokens)")
             continue
         print(f"  Branch {idx}:")
-        row: list[str] = []
         limit = len(tokens)
         for pos in range(limit):
             token_id = tokens[pos]
             token_text = tokenizer.decode([token_id]).replace("\n", "\\n")
             meta = metas[pos] if pos < len(metas) else None
             if meta is None:
-                cell = f"#{pos:02d} id={token_id:5d} '{token_text}' (meta ?)"
-            else:
-                branch_pos, time_val = meta
-                source_time = time_val - 1
-                cell = (
-                    f"#{pos:02d} id={token_id:5d} '{token_text}' "
-                    f"@pos={branch_pos:4d} t={time_val:4d} <- t={source_time:4d}"
-                )
-            row.append(cell)
-            if len(row) == 3:
-                print("    " + " | ".join(row))
-                row = []
-        if row:
-            print("    " + " | ".join(row))
+                print(f"    #{pos:02d} id={token_id:5d} text='{token_text}' (meta unavailable)")
+                continue
+            branch_pos, time_val = meta
+            source_time = time_val - 1
+            print(
+                f"    #{pos:02d} id={token_id:5d} text='{token_text}' "
+                f"@ branch_pos={branch_pos:4d} time={time_val:4d} (predicted from time={source_time:4d})"
+            )
