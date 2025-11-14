@@ -29,7 +29,8 @@ def apply_lora(model, rank=8):
 
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear) and module.weight.shape[0] == module.weight.shape[1]:
-            lora = LoRA(module.weight.shape[0], module.weight.shape[1], rank=rank).to(device)
+            target_dtype = module.weight.dtype
+            lora = LoRA(module.weight.shape[0], module.weight.shape[1], rank=rank).to(device=device, dtype=target_dtype)
             setattr(module, "lora", lora)
             original_forward = module.forward
 
@@ -46,6 +47,7 @@ def load_lora(model, path):
         if hasattr(module, 'lora'):
             lora_state = {k.replace(f'{name}.lora.', ''): v for k, v in state_dict.items() if f'{name}.lora.' in k}
             module.lora.load_state_dict(lora_state)
+            module.lora.to(device=module.weight.device, dtype=module.weight.dtype)
 
 
 def save_lora(model, path):
