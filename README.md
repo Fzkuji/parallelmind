@@ -1256,46 +1256,73 @@ response = generate_text(model, tokenizer, "你好")
 
 #### 并行/批量推理
 
-对于大规模数据的批量推理，可以使用 `scripts/parallel_inference_hf_lora.py`，支持多 GPU 分布式推理：
+**推荐使用 `scripts/parallel_generate.py`** - 支持多种输入方式、多 GPU 分布式推理：
 
-**单 GPU 批量推理：**
+**方式 1：直接输入问题列表（最常用）**
 
 ```bash
-python scripts/parallel_inference_hf_lora.py \
-  --base_model Qwen/Qwen2-0.5B-Instruct \
-  --lora_path out/lora/qwen2_parallel_lora_hf_final.pth \
+torchrun --nproc_per_node 8 scripts/parallel_generate.py \
+  --model_path Qwen/Qwen2.5-14B-Instruct \
+  --lora_path out/lora/qwen2_lora_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
-  --data_path dataset/test.jsonl \
   --out_path out/results.jsonl \
-  --batch_size 16 \
-  --batch_by_samples \
-  --max_branches_per_sample 8
+  --max_new_tokens 512 \
+  --mode sft \
+  --prompts \
+    "介绍一下人工智能" \
+    "讲解深度学习的原理" \
+    "自然语言处理的应用"
 ```
 
-**多 GPU 分布式推理：**
+**方式 2：从文本文件读取（每行一个问题）**
 
 ```bash
-torchrun --nproc_per_node 8 scripts/parallel_inference_hf_lora.py \
-  --base_model Qwen/Qwen2.5-14B-Instruct \
-  --lora_path out/lora/qwen2_14b_lora_final.pth \
-  --lora_rank 32 \
+# 创建问题文件
+cat > questions.txt << 'EOF'
+介绍一下人工智能
+讲解深度学习
+自然语言处理的应用
+EOF
+
+# 运行推理
+torchrun --nproc_per_node 8 scripts/parallel_generate.py \
+  --model_path Qwen/Qwen2.5-14B-Instruct \
+  --lora_path out/lora/qwen2_lora_final.pth \
+  --lora_rank 8 \
   --rope_2d_ratio 0.5 \
-  --data_path dataset/test_10k.jsonl \
-  --out_path out/results_10k.jsonl \
-  --batch_size 8 \
-  --batch_by_samples \
-  --max_branches_per_sample 12 \
-  --min_branches_per_sample 2
+  --prompts_file questions.txt \
+  --out_path out/results.jsonl \
+  --max_new_tokens 512 \
+  --mode sft
+```
+
+**方式 3：从 Parallel 数据集（JSONL）**
+
+```bash
+torchrun --nproc_per_node 8 scripts/parallel_generate.py \
+  --model_path Qwen/Qwen2.5-14B-Instruct \
+  --lora_path out/lora/qwen2_lora_final.pth \
+  --lora_rank 8 \
+  --rope_2d_ratio 0.5 \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --out_path out/results.jsonl \
+  --branches_per_sample 4 \
+  --max_branches_per_sample 8 \
+  --min_branches_per_sample 1 \
+  --max_new_tokens 512 \
+  --mode pretrain
 ```
 
 **特性：**
-- ✅ 多 GPU 自动分片，提高吞吐量
+- ✅ 支持直接输入问题（不需要准备数据集）
+- ✅ 支持文本文件输入（每行一个问题）
 - ✅ 支持 Parallel 数据格式（multi-branch）
+- ✅ 多 GPU 自动分片
 - ✅ 自动处理 2D RoPE 的 pos2d
-- ✅ 结果自动合并到单个 JSONL 文件
+- ✅ 支持 streaming 实时显示
 
-详细使用方法请参考：[并行推理指南](docs/PARALLEL_INFERENCE_GUIDE.md)
+详细使用方法请参考：[推理统一指南](docs/INFERENCE_UNIFIED_GUIDE.md)
 
 **其他配置示例：**
 
