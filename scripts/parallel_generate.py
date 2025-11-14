@@ -21,7 +21,7 @@ from parallel.columnar import (
     set_rope_pos2d,
 )
 from scripts.inference_hf_lora import load_model_with_lora
-from scripts.utils.layout_debug import dump_branch_layout
+from scripts.utils.layout_debug import dump_branch_layout, dump_generated_sequences
 
 
 def load_prompts(args) -> List[Any]:
@@ -498,6 +498,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 if eos_id is not None and token_id == eos_id:
                     stop_flags[branch_idx] = True
                     branch_generated[branch_idx].append(token_id)
+                    branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_current_times[branch_idx]))
                     if debug:
                         print(f"  -> Branch {branch_idx} hit EOS immediately at step {step_idx}")
                     continue
@@ -631,6 +632,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         for idx, is_placeholder in enumerate(placeholder_flags):
             if is_placeholder:
                 results[idx] = ""
+
+        if getattr(args, "print_layout", False):
+            dump_generated_sequences(branch_generated_meta, branch_generated, tokenizer)
 
         return results
 

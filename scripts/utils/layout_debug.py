@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple
 
 from parallel.columnar import BatchLayout
 from transformers import PreTrainedTokenizer
@@ -30,6 +30,7 @@ def dump_branch_layout(
     if seq_len == 0:
         return
 
+    row: list[str] = []
     for idx in range(limit):
         if attn[idx].item() <= 0:
             continue
@@ -38,12 +39,49 @@ def dump_branch_layout(
         branch_pos = int(pos2d[0].item())
         time_val = int(pos2d[1].item())
         branch_idx = branch_lookup.get(branch_pos, -1)
-        token_text = tokenizer.decode([token_id])
-        safe_text = token_text.replace("\n", "\\n")
-        print(
-            f"  [t={time_val:4d}] idx={idx:4d} branch={branch_idx:2d} pos={branch_pos:4d} "
-            f"id={token_id:5d} text='{safe_text}'"
-        )
+        token_text = tokenizer.decode([token_id]).replace("\n", "\\n")
+        row.append(f"[t={time_val:4d}] idx={idx:4d} b={branch_idx:2d} id={token_id:5d} '{token_text}'")
+        if len(row) == 4:
+            print("  " + " | ".join(row))
+            row = []
+    if row:
+        print("  " + " | ".join(row))
 
     if seq_len > limit:
         print(f"  ... ({seq_len - limit} more tokens not shown)")
+
+
+def dump_generated_sequences(
+    branch_meta: Sequence[Sequence[Tuple[int, int]]],
+    branch_tokens: Sequence[Sequence[int]],
+    tokenizer: PreTrainedTokenizer,
+) -> None:
+    """Print generated token sequences with branch/time information."""
+    print("\n[layout] Generated token sequences:")
+    for idx, tokens in enumerate(branch_tokens):
+        metas = branch_meta[idx] if idx < len(branch_meta) else []
+        if not tokens:
+            print(f"  Branch {idx}: (no tokens)")
+            continue
+        print(f"  Branch {idx}:")
+        row: list[str] = []
+        limit = len(tokens)
+        for pos in range(limit):
+            token_id = tokens[pos]
+            token_text = tokenizer.decode([token_id]).replace("\n", "\\n")
+            meta = metas[pos] if pos < len(metas) else None
+            if meta is None:
+                cell = f"#{pos:02d} id={token_id:5d} '{token_text}' (meta ?)"
+            else:
+                branch_pos, time_val = meta
+                source_time = time_val - 1
+                cell = (
+                    f"#{pos:02d} id={token_id:5d} '{token_text}' "
+                    f"@pos={branch_pos:4d} t={time_val:4d} <- t={source_time:4d}"
+                )
+            row.append(cell)
+            if len(row) == 3:
+                print("    " + " | ".join(row))
+                row = []
+        if row:
+            print("    " + " | ".join(row))
