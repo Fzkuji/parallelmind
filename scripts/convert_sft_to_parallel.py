@@ -35,6 +35,7 @@ def convert_sft_to_parallel_file(
     pad_max: int = 0,
     seed: int = 1337,
     log_every: int = 10000,
+    quiet: bool = False,
 ) -> int:
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
     pad_token = tokenizer.pad_token or ""
@@ -98,7 +99,7 @@ def convert_sft_to_parallel_file(
                         )
                         total_out += 1
 
-                        if log_every and total_out % log_every == 0:
+                        if (not quiet) and log_every and total_out % log_every == 0:
                             print(f"已转换 {total_out:,} 个分支 (处理 {total_in:,} 行)")
 
                         if max_samples and total_out >= max_samples:
@@ -109,7 +110,8 @@ def convert_sft_to_parallel_file(
                 else:
                     idx += 1
 
-    print(f"✓ 完成转换: 读取 {total_in:,} 行, 输出 {total_out:,} 个branch -> {output_path}")
+    if not quiet:
+        print(f"✓ 完成转换: 读取 {total_in:,} 行, 输出 {total_out:,} 个branch -> {output_path}")
     return total_out
 
 
@@ -122,6 +124,7 @@ def main():
     parser.add_argument("--pad_min", type=int, default=0)
     parser.add_argument("--pad_max", type=int, default=0)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     convert_sft_to_parallel_file(
@@ -132,6 +135,7 @@ def main():
         pad_min=args.pad_min,
         pad_max=args.pad_max,
         seed=args.seed,
+        quiet=args.quiet,
     )
 
 

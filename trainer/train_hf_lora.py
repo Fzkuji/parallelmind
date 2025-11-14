@@ -224,7 +224,10 @@ if __name__ == "__main__":
         torch.manual_seed(1337 + rank)
         torch.cuda.manual_seed(1337 + rank)
     else:
+        rank = 0
         args.device = torch.device(args.device)
+
+    is_main_process = (not ddp) or rank == 0
 
     tokenizer_path = args.tokenizer_path or args.base_model
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
@@ -245,7 +248,8 @@ if __name__ == "__main__":
             cache_name_parts.append(f"max{args.sft_max_samples}")
         converted_path = cache_dir / ("_".join(cache_name_parts) + ".jsonl")
 
-        if args.rebuild_parallel_cache or not converted_path.exists():
+        needs_rebuild = args.rebuild_parallel_cache or not converted_path.exists()
+        if needs_rebuild and is_main_process:
             Logger(
                 "parallel_sft 模式：开始将对话数据转换为并行格式 -> {}".format(converted_path)
             )
@@ -257,9 +261,17 @@ if __name__ == "__main__":
                 pad_min=args.sft_pad_min,
                 pad_max=args.sft_pad_max,
                 seed=args.sft_seed,
+                log_every=0,
+                quiet=True,
             )
-        else:
+        if ddp:
+            dist.barrier()
+
+        if not needs_rebuild and is_main_process:
             Logger(f"parallel_sft 模式：使用已有缓存 {converted_path}")
+
+        if not converted_path.exists():
+            raise RuntimeError(f"并行缓存文件不存在: {converted_path}")
 
         effective_data_path = str(converted_path)
 
