@@ -1160,6 +1160,8 @@ python train_lora.py
 
 #### HuggingFace 模型 + 2D RoPE 的 LoRA 微调
 
+> 📚 **快速上手**：查看 [HuggingFace + LoRA 快速开始指南](docs/QUICK_START_LORA.md) 获取完整示例和最佳实践
+
 若想直接在 HuggingFace 的基础模型（例如 Qwen/Qwen2、Llama 等）上复用 MiniMind 的 2D RoPE 设计并继续 LoRA 微调，可以使用 `trainer/train_hf_lora.py`：
 
 ```bash
@@ -1242,7 +1244,13 @@ response = generate_text(model, tokenizer, "你好")
 **重要提示**：
 - `--lora_rank` 必须与训练时一致
 - `--rope_2d_ratio` 必须与训练时一致
+- 如果训练时使用了 `--patch_rope`（默认），推理时也必须启用（推理脚本会自动处理 pos2d）
 - 如果训练时没用 `--patch_rope`，推理时加上 `--no_patch_rope`
+
+**关于 2D RoPE 的 pos2d 处理**：
+- ✅ 我们的推理脚本已自动重写 `prepare_inputs_for_generation`，会在每次生成前调用 `set_rope_pos2d`
+- ✅ 无需手动设置 pos2d，开箱即用
+- ⚠️ 如果自己写推理代码，必须在 forward/generate 前调用 `set_rope_pos2d`，否则会报错
 
 详细使用方法请参考：[推理指南](docs/INFERENCE_GUIDE.md)
 

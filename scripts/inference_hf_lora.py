@@ -7,6 +7,7 @@ import os
 import sys
 import argparse
 import torch
+import types
 from typing import List, Optional
 
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -20,6 +21,66 @@ from parallel.columnar import (
     set_rope_pos2d,
     _find_rotary_holder,
 )
+
+
+def _prepare_pos2d(input_ids: torch.Tensor) -> torch.Tensor:
+    """
+    为单条文本准备 pos2d（单个 branch + 线性 time id）
+
+    Args:
+        input_ids: [batch_size, seq_len]
+
+    Returns:
+        pos2d: [batch_size, seq_len, 2]，其中 [:, :, 0] 是 branch_id（全0），[:, :, 1] 是 time_id
+    """
+    batch_size, seq_len = input_ids.shape
+    device = input_ids.device
+
+    # time_ids: 0, 1, 2, ..., seq_len-1
+    time_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+
+    # branch_ids: 全部为 0（单个 branch）
+    branch_ids = torch.zeros_like(time_ids)
+
+    # 堆叠成 [batch, seq, 2]
+    pos2d = torch.stack([branch_ids, time_ids], dim=-1)
+
+    return pos2d
+
+
+def _set_prompt_pos2d(model, input_ids: torch.Tensor):
+    """为整条 prompt 设置 2D RoPE 的位置编码"""
+    pos2d = _prepare_pos2d(input_ids)
+    set_rope_pos2d(model, pos2d)
+
+
+def _inject_pos2d_hook(model):
+    """重写 prepare_inputs_for_generation，保证增量生成也会携带 pos2d"""
+    if getattr(model, "_pos2d_hook_injected", False):
+        return
+
+    if not hasattr(model, "prepare_inputs_for_generation"):
+        return
+
+    model._orig_prepare_inputs_for_generation = model.prepare_inputs_for_generation
+
+    def _prepare_inputs_for_generation(self, input_ids, **kwargs):
+        inputs = self._orig_prepare_inputs_for_generation(input_ids, **kwargs)
+
+        position_ids = inputs.get("position_ids")
+        if position_ids is None:
+            seq_len = inputs["input_ids"].size(-1)
+            position_ids = torch.arange(seq_len, device=inputs["input_ids"].device).unsqueeze(0)
+            inputs["position_ids"] = position_ids
+
+        branch_ids = torch.zeros_like(position_ids)
+        pos2d = torch.stack([branch_ids, position_ids], dim=-1)
+        set_rope_pos2d(self, pos2d)
+
+        return inputs
+
+    model.prepare_inputs_for_generation = types.MethodType(_prepare_inputs_for_generation, model)
+    model._pos2d_hook_injected = True
 
 
 def auto_pair_indices(model, ratio: float):
@@ -81,6 +142,10 @@ def load_model_with_lora(
         pair_indices = auto_pair_indices(model, rope_2d_ratio)
         patch_model_with_interleaved_2d_rope(model, pair_indices)
         print(f"✓ 2D RoPE 已应用（{len(pair_indices)} 个频率对用于 branch 维度）")
+        _inject_pos2d_hook(model)
+        model._uses_pos2d = True
+    else:
+        model._uses_pos2d = False
 
     # 应用 LoRA
     print(f"应用 LoRA（rank={lora_rank}）...")
@@ -104,7 +169,7 @@ def load_model_with_lora(
     print(f"模型加载完成！总参数量: {total_params / 1e6:.2f}M")
     print(f"=" * 80)
 
-    return model, tokenizer
+    return model, tokenizer, patch_rope
 
 
 def generate_text(
@@ -141,6 +206,9 @@ def generate_text(
     print(f"{'-' * 80}")
     print(prompt)
     print(f"{'=' * 80}\n")
+
+    if getattr(model, "_uses_pos2d", False):
+        _set_prompt_pos2d(model, input_ids)
 
     # 生成
     with torch.no_grad():
@@ -207,9 +275,11 @@ def interactive_chat(
                 add_generation_prompt=True
             )
 
-            # 生成回复
             inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
             input_ids = inputs["input_ids"].to(device)
+
+            if getattr(model, "_uses_pos2d", False):
+                _set_prompt_pos2d(model, input_ids)
 
             with torch.no_grad():
                 outputs = model.generate(
@@ -222,10 +292,7 @@ def interactive_chat(
                     eos_token_id=tokenizer.eos_token_id,
                 )
 
-            # 解码输出
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-            # 提取助手回复
             response = generated_text[len(prompt):].strip()
 
             print(f"Assistant: {response}\n")
@@ -265,7 +332,7 @@ def main():
     args = parser.parse_args()
 
     # 加载模型
-    model, tokenizer = load_model_with_lora(
+    model, tokenizer, patch_rope = load_model_with_lora(
         base_model=args.base_model,
         lora_path=args.lora_path,
         lora_rank=args.lora_rank,

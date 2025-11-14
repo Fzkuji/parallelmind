@@ -1,5 +1,19 @@
 # HuggingFace + LoRA 推理指南
 
+## ⚠️ 重要提示：2D RoPE 需要 pos2d
+
+如果训练时使用了 `--patch_rope`（2D RoPE），推理时必须：
+1. 同样启用 `--patch_rope`
+2. 确保 `--rope_2d_ratio` 与训练时一致
+3. **自动处理 pos2d**：我们的推理脚本已经自动重写了 `prepare_inputs_for_generation`，会在每次生成前调用 `set_rope_pos2d`
+
+如果不设置 pos2d，会遇到错误：
+```
+RuntimeError: extra_pos2d is not set. Call set_rope_pos2d first.
+```
+
+我们的推理脚本已经处理了这个问题，无需手动干预。
+
 ## 快速开始
 
 训练完成后，LoRA 权重保存在：
@@ -7,6 +21,9 @@
 - `out/lora/<lora_name>_<model_tag>_final.pth`（最终权重）
 
 ## 推理方法
+
+> ⚠️ 如果训练时启用了 2D RoPE（`--patch_rope`），推理也必须保持相同的 `--rope_2d_ratio`。  
+> 本脚本会自动为 prompt 和增量生成注入 `pos2d`，无需额外手动处理。
 
 ### 方法 1：交互式对话（推荐）
 
@@ -39,13 +56,35 @@ python scripts/inference_hf_lora.py \
   --prompt "请写一首关于春天的诗："
 ```
 
-### 方法 3：Python 代码调用
+### 方法 3：Python 代码调用（推荐使用封装函数）
 
+**简单方式（推荐）**：
+```python
+from scripts.inference_hf_lora import load_model_with_lora, generate_text
+
+# 加载模型（自动处理 2D RoPE 的 pos2d）
+model, tokenizer, patch_rope = load_model_with_lora(
+    base_model="Qwen/Qwen2-0.5B-Instruct",
+    lora_path="out/lora/qwen2_parallel_lora_hf_final.pth",
+    lora_rank=8,
+    rope_2d_ratio=0.5,
+    patch_rope=True,
+)
+
+# 生成（自动处理 pos2d）
+response = generate_text(model, tokenizer, "你好")
+```
+
+**手动方式（需要处理 pos2d）**：
 ```python
 import torch
+import types
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from model.model_lora import apply_lora, load_lora
-from parallel.columnar import patch_model_with_interleaved_2d_rope
+from parallel.columnar import (
+    patch_model_with_interleaved_2d_rope,
+    set_rope_pos2d,
+)
 
 # 1. 加载基础模型
 model = AutoModelForCausalLM.from_pretrained(
@@ -64,11 +103,27 @@ from scripts.inference_hf_lora import auto_pair_indices
 pair_indices = auto_pair_indices(model, ratio=0.5)
 patch_model_with_interleaved_2d_rope(model, pair_indices)
 
+# ⚠️ 关键：重写 prepare_inputs_for_generation 以自动设置 pos2d
+def _prepare_inputs_for_generation(self, input_ids, **kwargs):
+    inputs = self._orig_prepare_inputs_for_generation(input_ids, **kwargs)
+    pos_ids = inputs.get("position_ids")
+    if pos_ids is None:
+        seq_len = inputs["input_ids"].size(-1)
+        pos_ids = torch.arange(seq_len, device=inputs["input_ids"].device).unsqueeze(0)
+        inputs["position_ids"] = pos_ids
+    branch_ids = torch.zeros_like(pos_ids)
+    pos2d = torch.stack([branch_ids, pos_ids], dim=-1)
+    set_rope_pos2d(self, pos2d)
+    return inputs
+
+model._orig_prepare_inputs_for_generation = model.prepare_inputs_for_generation
+model.prepare_inputs_for_generation = types.MethodType(_prepare_inputs_for_generation, model)
+
 # 3. 应用 LoRA
 apply_lora(model, rank=8)
 load_lora(model, "out/lora/qwen2_parallel_lora_hf_final.pth")
 
-# 4. 生成
+# 4. 生成（现在会自动处理 pos2d）
 model.eval()
 prompt = "你好，请介绍一下你自己"
 inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
@@ -241,7 +296,20 @@ model = AutoModelForCausalLM.from_pretrained(
 
 ## 常见问题
 
-### Q1: 出现 "未找到 rotary_emb" 错误
+### Q1: 出现 "extra_pos2d is not set" 错误
+
+**错误信息**：
+```
+RuntimeError: extra_pos2d is not set. Call set_rope_pos2d first.
+```
+
+**原因**：使用了 2D RoPE（`--patch_rope`）但没有设置 pos2d
+
+**解决**：
+1. **推荐**：使用我们提供的推理脚本 `scripts/inference_hf_lora.py`，它已经自动处理了 pos2d
+2. 如果自己写代码，需要重写 `prepare_inputs_for_generation` 方法（见上面的手动方式示例）
+
+### Q2: 出现 "未找到 rotary_emb" 错误
 
 **原因**：某些模型的 RoPE 结构不同
 
@@ -253,7 +321,7 @@ python scripts/inference_hf_lora.py \
   --no_patch_rope
 ```
 
-### Q2: 生成结果质量不好
+### Q3: 生成结果质量不好
 
 **可能原因**：
 1. 训练不充分
@@ -271,7 +339,7 @@ python scripts/inference_hf_lora.py \
 --repetition_penalty 1.2
 ```
 
-### Q3: 显存不足
+### Q4: 显存不足
 
 **解决方案**：
 1. 使用较小的模型
@@ -285,7 +353,7 @@ python scripts/inference_hf_lora.py \
   --dtype float32
 ```
 
-### Q4: LoRA 权重不匹配
+### Q5: LoRA 权重不匹配
 
 **错误信息**：`size mismatch for ...`
 
@@ -293,7 +361,7 @@ python scripts/inference_hf_lora.py \
 
 **解决**：确保 `--lora_rank` 与训练时完全一致
 
-### Q5: 如何验证 LoRA 是否正确加载？
+### Q6: 如何验证 LoRA 是否正确加载？
 
 在加载后检查模型参数：
 ```python
