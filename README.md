@@ -1254,6 +1254,49 @@ response = generate_text(model, tokenizer, "你好")
 
 详细使用方法请参考：[推理指南](docs/INFERENCE_GUIDE.md)
 
+#### 并行/批量推理
+
+对于大规模数据的批量推理，可以使用 `scripts/parallel_inference_hf_lora.py`，支持多 GPU 分布式推理：
+
+**单 GPU 批量推理：**
+
+```bash
+python scripts/parallel_inference_hf_lora.py \
+  --base_model Qwen/Qwen2-0.5B-Instruct \
+  --lora_path out/lora/qwen2_parallel_lora_hf_final.pth \
+  --lora_rank 8 \
+  --rope_2d_ratio 0.5 \
+  --data_path dataset/test.jsonl \
+  --out_path out/results.jsonl \
+  --batch_size 16 \
+  --batch_by_samples \
+  --max_branches_per_sample 8
+```
+
+**多 GPU 分布式推理：**
+
+```bash
+torchrun --nproc_per_node 8 scripts/parallel_inference_hf_lora.py \
+  --base_model Qwen/Qwen2.5-14B-Instruct \
+  --lora_path out/lora/qwen2_14b_lora_final.pth \
+  --lora_rank 32 \
+  --rope_2d_ratio 0.5 \
+  --data_path dataset/test_10k.jsonl \
+  --out_path out/results_10k.jsonl \
+  --batch_size 8 \
+  --batch_by_samples \
+  --max_branches_per_sample 12 \
+  --min_branches_per_sample 2
+```
+
+**特性：**
+- ✅ 多 GPU 自动分片，提高吞吐量
+- ✅ 支持 Parallel 数据格式（multi-branch）
+- ✅ 自动处理 2D RoPE 的 pos2d
+- ✅ 结果自动合并到单个 JSONL 文件
+
+详细使用方法请参考：[并行推理指南](docs/PARALLEL_INFERENCE_GUIDE.md)
+
 **其他配置示例：**
 
 ```bash

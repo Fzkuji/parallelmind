@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, List, Sequence
+from typing import Any, List, Sequence, Tuple
 
 # 设置路径，使脚本能从scripts目录运行
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -20,6 +20,7 @@ from parallel.columnar import (
     build_incremental_causal_mask,
     set_rope_pos2d,
 )
+from scripts.inference_hf_lora import load_model_with_lora
 
 
 def load_prompts(args) -> List[Any]:
@@ -50,6 +51,22 @@ def load_prompts(args) -> List[Any]:
 
 
 def load_model(args):
+    if args.hf_base_model:
+        if not args.lora_path:
+            raise ValueError("--lora_path 必须指定，用于加载 LoRA 权重")
+        model, tokenizer, patch_rope = load_model_with_lora(
+            base_model=args.hf_base_model,
+            lora_path=args.lora_path,
+            lora_rank=args.lora_rank,
+            rope_2d_ratio=args.rope_2d_ratio,
+            patch_rope=not args.no_patch_rope,
+            device=args.device,
+            dtype=args.hf_dtype,
+        )
+        model._uses_pos2d = patch_rope
+        model._is_hf = True
+        return model, tokenizer
+
     if args.model_path:
         ckpt_path = Path(args.model_path)
     else:
@@ -114,7 +131,10 @@ def load_model(args):
 
     model = MiniMindForCausalLM(config)
     model.load_state_dict(state_dict, strict=True)
-    return model.to(args.device).eval(), tokenizer
+    model = model.to(args.device).eval()
+    model._uses_pos2d = (pe_type == "rope")
+    model._is_hf = False
+    return model, tokenizer
 
 
 def apply_chat_template(tokenizer, text: str, enable_chat: bool) -> List[int]:
@@ -295,8 +315,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         else:
             print("Time range: (empty)")
 
-    # 只有RoPE 2D模式需要set_rope_pos2d，FPE模式不需要
-    if not hasattr(model.model, 'fourier_pe') or model.model.fourier_pe is None:
+    if getattr(model, "_uses_pos2d", False):
         set_rope_pos2d(model, layout.pos2d)
 
     input_ids = layout.input_ids
@@ -342,13 +361,16 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
         # 初始prefill
         column_mask = build_columnar_causal_mask(time_ids, attn_mask).to(device, dtype=param_dtype)
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=column_mask,
-            position_ids=pos1d,
-            pos2d=layout.pos2d,
-            use_cache=True,
-        )
+        forward_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": column_mask,
+            "use_cache": True,
+        }
+        if not getattr(model, "_is_hf", False):
+            forward_kwargs["position_ids"] = pos1d
+            forward_kwargs["pos2d"] = layout.pos2d
+
+        outputs = model(**forward_kwargs)
 
         metadata = layout.metadata[0]
         branch_positions = metadata.branch_positions  # [branch_id * 32, ...]
@@ -535,17 +557,20 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                         incremental_mask[0, 0, i, j] = 0.0
 
             # Forward
-            # 只有RoPE 2D模式需要set_rope_pos2d，FPE模式不需要
-            if not hasattr(model.model, 'fourier_pe') or model.model.fourier_pe is None:
+            if getattr(model, "_uses_pos2d", False):
                 set_rope_pos2d(model, batch_pos2d)
-            outputs = model(
-                input_ids=batch_input_ids,
-                attention_mask=incremental_mask,
-                position_ids=batch_pos1d,
-                past_key_values=past,
-                pos2d=batch_pos2d,
-                use_cache=True,
-            )
+
+            forward_kwargs = {
+                "input_ids": batch_input_ids,
+                "attention_mask": incremental_mask,
+                "past_key_values": past,
+                "use_cache": True,
+            }
+            if not getattr(model, "_is_hf", False):
+                forward_kwargs["position_ids"] = batch_pos1d
+                forward_kwargs["pos2d"] = batch_pos2d
+
+            outputs = model(**forward_kwargs)
 
             # 更新状态
             past = outputs.past_key_values
@@ -604,9 +629,16 @@ def main():
     parser = argparse.ArgumentParser(description="MiniMind 列式并行推理")
     parser.add_argument("--prompts", nargs="*", help="命令行直接提供的问题")
     parser.add_argument("--prompts_file", type=str, default="", help="包含多个问题的文本或 JSONL")
+    parser.add_argument("--data_path", type=str, default="", help="prompts_file 的别名，便于从数据集加载")
     parser.add_argument("--branches_per_sample", type=int, default=4)
     parser.add_argument("--out_dir", type=str, default="out")
     parser.add_argument("--model_path", type=str, default="")
+    parser.add_argument("--hf_base_model", type=str, default="", help="HuggingFace 模型名称/路径（使用 HF + LoRA 推理时指定）")
+    parser.add_argument("--lora_path", type=str, default="", help="LoRA 权重路径（HF 模式必填）")
+    parser.add_argument("--lora_rank", type=int, default=8)
+    parser.add_argument("--rope_2d_ratio", type=float, default=0.5)
+    parser.add_argument("--no_patch_rope", action="store_true")
+    parser.add_argument("--hf_dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--hidden_size", type=int, default=512)
     parser.add_argument("--num_hidden_layers", type=int, default=8)
     parser.add_argument("--use_moe", action="store_true")
@@ -622,7 +654,18 @@ def main():
     parser.add_argument("--debug", action="store_true", help="启用调试输出")
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     parser.add_argument("--pe", type=str, choices=['rope', 'fpe'], default=None, help="位置编码类型（不指定则自动检测）")
+    parser.add_argument("--out_path", type=str, default="", help="生成结果保存为 JSONL（分布式会自动按 rank 拆分）")
     args = parser.parse_args()
+
+    if args.data_path and not args.prompts_file:
+        args.prompts_file = args.data_path
+
+    if not args.hf_base_model and args.model_path and not Path(args.model_path).exists():
+        args.hf_base_model = args.model_path
+        args.model_path = ""
+
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
     model, tokenizer = load_model(args)
     prompts = load_prompts(args)
@@ -660,6 +703,17 @@ def main():
             str_prompts[start : start + args.branches_per_sample]
             for start in range(0, len(str_prompts), args.branches_per_sample)
         ]
+
+    total_groups = len(prompt_groups)
+    prompt_groups = prompt_groups[rank::world_size]
+
+    out_writer = None
+    if args.out_path:
+        base, ext = os.path.splitext(args.out_path)
+        ext = ext or ".jsonl"
+        out_path = args.out_path if world_size == 1 else f"{base}_rank{rank}{ext}"
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        out_writer = open(out_path, "w", encoding="utf-8")
 
     for group in prompt_groups:
         if not group:
@@ -703,6 +757,19 @@ def main():
                 print(prompt)
                 print("--- Response ---")
                 print(response if response else "(空响应)")
+                if out_writer:
+                    out_writer.write(
+                        json.dumps({"prompt": str(prompt), "response": response}, ensure_ascii=False) + "\n"
+                    )
+        else:
+            if out_writer:
+                for prompt, response in zip(group, responses):
+                    out_writer.write(
+                        json.dumps({"prompt": str(prompt), "response": response}, ensure_ascii=False) + "\n"
+                    )
+
+    if out_writer:
+        out_writer.close()
 
 
 if __name__ == "__main__":
