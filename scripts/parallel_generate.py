@@ -291,12 +291,14 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branches.append({"input_ids": list(tokens), "answer_offset": len(tokens)})
     samples = [{"main": "", "branches": branches}]
 
+    align_mode = "right" if (args.mode == "sft" and not getattr(args, "interleave_branches", False)) else "left"
+
     layout = build_flat_linear_layout(
         tokenizer,
         samples,
         device=device,
         pad_to=None,
-        align_to="left",  # 与训练保持一致，使用左对齐
+        align_to=align_mode,
         interleave_branches=(args.mode == "pretrain"),
     )
 
