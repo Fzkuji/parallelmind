@@ -292,7 +292,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branches.append({"input_ids": list(tokens), "answer_offset": len(tokens)})
     samples = [{"main": "", "branches": branches}]
 
-    align_mode = "right" if (args.mode == "sft" and not getattr(args, "interleave_branches", False)) else "left"
+    # 默认总是使用interleave（与训练默认值一致），除非明确指定不要
+    use_interleave = getattr(args, "interleave_branches", True)
+    align_mode = "right" if (args.mode == "sft" and not use_interleave) else "left"
 
     layout = build_flat_linear_layout(
         tokenizer,
@@ -300,7 +302,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         device=device,
         pad_to=None,
         align_to=align_mode,
-        interleave_branches=(args.mode == "pretrain"),
+        interleave_branches=use_interleave,
     )
 
     if getattr(args, "print_layout", False):
@@ -666,9 +668,25 @@ def main():
     parser.add_argument("--debug", action="store_true", help="启用调试输出")
     parser.add_argument("--print_layout", action="store_true", help="打印列式布局的 token 时间/branch 信息")
     parser.add_argument("--layout_max_tokens", type=int, default=256, help="打印布局时的最大token数")
+    parser.add_argument(
+        "--interleave_branches",
+        action="store_true",
+        dest="interleave_branches",
+        help="启用多分支交错排列（默认开启，需与训练设置一致）",
+    )
+    parser.add_argument(
+        "--no_interleave_branches",
+        action="store_false",
+        dest="interleave_branches",
+        help="禁用分支交错排列（仅在训练同样禁用时使用）",
+    )
+    parser.set_defaults(interleave_branches=True)
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     parser.add_argument("--pe", type=str, choices=['rope', 'fpe'], default=None, help="位置编码类型（不指定则自动检测）")
     parser.add_argument("--out_path", type=str, default="", help="生成结果保存为 JSONL（分布式会自动按 rank 拆分）")
+    parser.add_argument("--interleave_branches", action="store_true", dest="interleave_branches", help="启用分支交错模式（默认）")
+    parser.add_argument("--no_interleave_branches", action="store_false", dest="interleave_branches", help="禁用分支交错模式")
+    parser.set_defaults(interleave_branches=True)
     args = parser.parse_args()
 
     if args.data_path and not args.prompts_file:

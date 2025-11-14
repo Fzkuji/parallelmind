@@ -1247,6 +1247,8 @@ python scripts/parallel_generate.py \
   --out_path out/results.jsonl \
   --max_new_tokens 512 \
   --mode sft \
+  --print_layout \
+  --layout_max_tokens 120 \
   --prompts \
     "介绍一下人工智能" \
     "讲解深度学习的原理" \
@@ -1254,6 +1256,8 @@ python scripts/parallel_generate.py \
 ```
 
 > 指定 `--hf_base_model` 后会自动使用该 tokenizer 的 `apply_chat_template`，无需再手动加 `--chat_template`，从而保证提示格式和训练阶段一致。
+
+> 调试列式布局：若想确认各 branch 的 token/时间坐标，可在命令后附加 `--print_layout --layout_max_tokens 120`，脚本会在推理前逐行打印每个 token 的 `(branch, time)`。这能快速验证右对齐、分支间距等设置是否符合预期。
 
 单个问题时，把 `--branches_per_sample` 设为 1 并只传一个 prompt 即可：
 
