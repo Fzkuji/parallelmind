@@ -294,7 +294,11 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
     # 默认总是使用interleave（与训练默认值一致），除非明确指定不要
     use_interleave = getattr(args, "interleave_branches", True)
-    align_mode = "right" if (args.mode == "sft" and not use_interleave) else "left"
+    requested_align = getattr(args, "align_to", None)
+    if requested_align is not None:
+        align_mode = requested_align
+    else:
+        align_mode = "right" if (args.mode == "sft" and not use_interleave) else "left"
 
     layout = build_flat_linear_layout(
         tokenizer,
@@ -685,6 +689,13 @@ def main():
         help="禁用分支交错排列（仅在训练同样禁用时使用）",
     )
     parser.set_defaults(interleave_branches=True)
+    parser.add_argument(
+        "--align_to",
+        type=str,
+        choices=["left", "right"],
+        default=None,
+        help="列式布局对齐方式（默认根据模式自动选择）",
+    )
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     parser.add_argument("--pe", type=str, choices=['rope', 'fpe'], default=None, help="位置编码类型（不指定则自动检测）")
     parser.add_argument("--out_path", type=str, default="", help="生成结果保存为 JSONL（分布式会自动按 rank 拆分）")

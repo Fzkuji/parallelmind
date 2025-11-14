@@ -247,6 +247,11 @@ def build_flat_linear_layout(
             pointers = [0 for _ in branch_sequences]
             start_positions = [-1 for _ in branch_sequences]
             column_time = 0
+            max_interleave_len = max((seq.numel() for seq in branch_sequences), default=0)
+            align_offsets = [0 for _ in branch_sequences]
+            if align_to == "right" and max_interleave_len > 0:
+                for idx, tokens in enumerate(branch_sequences):
+                    align_offsets[idx] = max_interleave_len - tokens.numel()
 
             while True:
                 progressed = False
@@ -255,9 +260,11 @@ def build_flat_linear_layout(
                     if pointers[local_idx] >= seq_len:
                         continue
                     order = pointers[local_idx]
+                    base_offset = align_offsets[local_idx] + branch_offsets[local_idx]
+                    time_value = column_time + base_offset
                     if start_positions[local_idx] < 0:
-                        start_positions[local_idx] = column_time
-                    entries.append((column_time, branch_id, order, int(tokens[order].item())))
+                        start_positions[local_idx] = time_value
+                    entries.append((time_value, branch_id, order, int(tokens[order].item())))
                     pointers[local_idx] += 1
                     progressed = True
                 if not progressed:

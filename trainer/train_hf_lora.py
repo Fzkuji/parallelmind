@@ -207,6 +207,13 @@ if __name__ == "__main__":
     parser.add_argument("--interleave_branches", action="store_true", default=True)
     parser.add_argument("--branch_stride", type=int, default=128)
     parser.add_argument("--batch_by_samples", action="store_true")
+    parser.add_argument(
+        "--align_to",
+        type=str,
+        choices=["left", "right"],
+        default="left",
+        help="列式布局对齐方式（left=默认，right=末尾对齐）",
+    )
 
     args = parser.parse_args()
     args.dtype = "bfloat16"
@@ -332,6 +339,7 @@ if __name__ == "__main__":
         random_time_offset=args.random_time_offset,
         interleave_branches=args.interleave_branches,
         branch_stride=args.branch_stride,
+        align_to=args.align_to,
     )
     if args.batch_by_samples:
         collator.target_samples = args.batch_size

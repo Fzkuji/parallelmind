@@ -18,6 +18,7 @@ class ParallelPretrainCollator:
         random_time_offset: bool = True,
         interleave_branches: bool = False,
         branch_stride: int = 128,
+        align_to: str = "left",
     ) -> None:
         self.tokenizer = tokenizer
         self.branches_per_sample = max(1, branches_per_sample)
@@ -31,6 +32,7 @@ class ParallelPretrainCollator:
         self._buffer: Deque[str] = deque()
         self.interleave_branches = interleave_branches
         self.branch_stride = branch_stride
+        self.align_to = align_to
 
     def __call__(self, features: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
         import random
@@ -157,6 +159,7 @@ class ParallelPretrainCollator:
             branch_stride=self.branch_stride,
             random_time_offset=self.random_time_offset,
             interleave_branches=self.interleave_branches,
+            align_to=self.align_to,
         )
 
         branch_counts = torch.tensor(
