@@ -26,8 +26,8 @@ from parallel.columnar import (
     _find_rotary_holder,
     build_columnar_causal_mask,
 )
-from parallel_data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
-from parallel_data.parallel_collator import ParallelPretrainCollator
+from parallel_data.parallel_dataset import ParallelSFTDataset
+from parallel_data.parallel_collator import ParallelSFTCollator
 
 warnings.filterwarnings("ignore")
 

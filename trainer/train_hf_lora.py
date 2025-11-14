@@ -4,6 +4,7 @@ import argparse
 import time
 import math
 import warnings
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -27,6 +28,7 @@ from parallel.columnar import (
 )
 from parallel_data.parallel_dataset import ParallelPretrainDataset
 from parallel_data.parallel_collator import ParallelPretrainCollator
+from scripts.convert_sft_to_parallel import convert_sft_to_parallel_file
 
 warnings.filterwarnings("ignore")
 
@@ -148,6 +150,33 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer_path", type=str, default=None, help="若留空则与base_model一致")
     parser.add_argument("--out_dir", type=str, default=os.path.join(root_path, "out"))
     parser.add_argument("--data_path", type=str, default=os.path.join(root_path, "dataset", "pretrain_hq_split.jsonl"))
+    parser.add_argument(
+        "--data_mode",
+        type=str,
+        choices=["parallel", "parallel_sft"],
+        default="parallel",
+        help="parallel: data_path 已是并行格式; parallel_sft: 对话 SFT JSONL, 训练前自动转换",
+    )
+    parser.add_argument(
+        "--parallel_cache_dir",
+        type=str,
+        default=None,
+        help="parallel_sft 模式下用于存放转换后缓存文件的目录（默认 out/parallel_cache）",
+    )
+    parser.add_argument("--sft_pad_min", type=int, default=0, help="parallel_sft 随机左/右 padding 的最小token数")
+    parser.add_argument("--sft_pad_max", type=int, default=0, help="parallel_sft 随机左/右 padding 的最大token数")
+    parser.add_argument("--sft_seed", type=int, default=1337, help="parallel_sft 转换随机种子")
+    parser.add_argument(
+        "--sft_max_samples",
+        type=int,
+        default=0,
+        help="parallel_sft 转换时最多处理的对话条数，0表示不限制",
+    )
+    parser.add_argument(
+        "--rebuild_parallel_cache",
+        action="store_true",
+        help="parallel_sft 模式强制重新生成缓存文件",
+    )
     parser.add_argument("--lora_name", type=str, default="hf_lora")
     parser.add_argument("--lora_rank", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=3)
@@ -202,6 +231,38 @@ if __name__ == "__main__":
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else tokenizer.unk_token
 
+    effective_data_path = args.data_path
+    if args.data_mode == "parallel_sft":
+        if not os.path.exists(args.data_path):
+            raise FileNotFoundError(f"SFT 数据文件不存在: {args.data_path}")
+
+        cache_dir = Path(args.parallel_cache_dir) if args.parallel_cache_dir else Path(args.out_dir) / "parallel_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        base_name = Path(args.data_path).stem or "parallel_sft"
+        cache_name_parts = [base_name, "parallel", f"pad{args.sft_pad_min}-{args.sft_pad_max}", f"seed{args.sft_seed}"]
+        if args.sft_max_samples:
+            cache_name_parts.append(f"max{args.sft_max_samples}")
+        converted_path = cache_dir / ("_".join(cache_name_parts) + ".jsonl")
+
+        if args.rebuild_parallel_cache or not converted_path.exists():
+            Logger(
+                "parallel_sft 模式：开始将对话数据转换为并行格式 -> {}".format(converted_path)
+            )
+            convert_sft_to_parallel_file(
+                input_path=args.data_path,
+                output_path=str(converted_path),
+                tokenizer_name=tokenizer_path,
+                max_samples=args.sft_max_samples,
+                pad_min=args.sft_pad_min,
+                pad_max=args.sft_pad_max,
+                seed=args.sft_seed,
+            )
+        else:
+            Logger(f"parallel_sft 模式：使用已有缓存 {converted_path}")
+
+        effective_data_path = str(converted_path)
+
     torch_dtype = {
         "float32": torch.float32,
         "float16": torch.float16,
@@ -243,9 +304,9 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(trainable_params, lr=args.learning_rate)
 
     # 加载 Parallel 数据集
-    Logger(f"加载 Parallel 数据集: {args.data_path}")
+    Logger(f"加载 Parallel 数据集: {effective_data_path}")
     train_ds = ParallelPretrainDataset(
-        data_path=args.data_path,
+        data_path=effective_data_path,
         max_samples=args.max_parallel_samples,
     )
     train_sampler = DistributedSampler(train_ds, shuffle=True) if ddp else None

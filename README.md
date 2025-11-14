@@ -1169,6 +1169,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --base_model Qwen/Qwen2-0.5B-Instruct \
   --tokenizer_path Qwen/Qwen2-0.5B-Instruct \
   --data_path dataset/pretrain_hq_split.jsonl \
+  --data_mode parallel \
   --lora_name qwen2_parallel_lora \
   --lora_rank 8 \
   --epochs 1 \
@@ -1186,6 +1187,39 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --ddp
 ```
 
+> 💡 **对话式 SFT JSONL？直接加 `--data_mode parallel_sft` 即可**
+
+```bash
+torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
+  --base_model Qwen/Qwen2.5-14B-Instruct \
+  --data_path dataset/sft_512.jsonl \
+  --data_mode parallel_sft \
+  --parallel_cache_dir out/parallel_cache \
+  --sft_pad_min 0 \
+  --sft_pad_max 32 \
+  --batch_size 4 \
+  --batch_by_samples \
+  --max_branches_per_sample 8 \
+  --min_branches_per_sample 1 \
+  --rope_2d_ratio 0.5 \
+  --lora_rank 8 \
+  --epochs 1 \
+  --ddp
+```
+
+`parallel_sft` 模式会在训练前自动把 `dataset/sft_512.jsonl`（常见的 `{"conversations": [...]}` 结构）转换成列式 parallel 格式：
+
+- 所有 user / assistant 回合被拆成 branch，LoRA 仅对 answer 部分计算 loss；
+- 支持随机 padding (`--sft_pad_min/max`) 让不同分支在时间轴上错位出现，保持真实对话节奏；
+- 结果会缓存到 `out/parallel_cache/*.jsonl` 中，重复训练直接复用；
+- 若需要重新生成，加 `--rebuild_parallel_cache`。也可以手动调用 `python scripts/convert_sft_to_parallel.py --input dataset/sft_512.jsonl --output dataset/sft_parallel.jsonl --tokenizer Qwen/Qwen2.5-14B-Instruct`，然后用 `--data_mode parallel` 指向转换文件。
+
+新增参数速览：
+
+- `--data_mode {parallel, parallel_sft}`：选择数据来源类型（默认 parallel，兼容旧流程）。
+- `--parallel_cache_dir`：`parallel_sft` 输出缓存目录（默认 `out/parallel_cache`）。
+- `--sft_pad_min / --sft_pad_max / --sft_seed / --sft_max_samples`：控制对话转换的随机 padding 和采样数。
+
 **关键参数说明：**
 
 - `--base_model / --tokenizer_path`：任意 HuggingFace CausalLM 模型名称或本地路径
@@ -1201,71 +1235,15 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 
 #### LoRA 推理
 
-训练完成后，使用以下方式进行推理：
-
-**1. 交互式对话（推荐）**
-
-```bash
-python scripts/inference_hf_lora.py \
-  --base_model Qwen/Qwen2-0.5B-Instruct \
-  --lora_path out/lora/qwen2_parallel_lora_hf_final.pth \
-  --lora_rank 8 \
-  --rope_2d_ratio 0.5 \
-  --mode chat
-```
-
-**2. 单次生成**
-
-```bash
-python scripts/inference_hf_lora.py \
-  --base_model Qwen/Qwen2-0.5B-Instruct \
-  --lora_path out/lora/qwen2_parallel_lora_hf_final.pth \
-  --lora_rank 8 \
-  --mode generate \
-  --prompt "请介绍一下人工智能"
-```
-
-**3. Python 代码调用**
-
-```python
-from scripts.inference_hf_lora import load_model_with_lora, generate_text
-
-# 加载模型
-model, tokenizer = load_model_with_lora(
-    base_model="Qwen/Qwen2-0.5B-Instruct",
-    lora_path="out/lora/qwen2_parallel_lora_hf_final.pth",
-    lora_rank=8,
-)
-
-# 生成
-response = generate_text(model, tokenizer, "你好")
-```
-
-**重要提示**：
-- `--lora_rank` 必须与训练时一致
-- `--rope_2d_ratio` 必须与训练时一致
-- 如果训练时使用了 `--patch_rope`（默认），推理时也必须启用（推理脚本会自动处理 pos2d）
-- 如果训练时没用 `--patch_rope`，推理时加上 `--no_patch_rope`
-
-**关于 2D RoPE 的 pos2d 处理**：
-- ✅ 我们的推理脚本已自动重写 `prepare_inputs_for_generation`，会在每次生成前调用 `set_rope_pos2d`
-- ✅ 无需手动设置 pos2d，开箱即用
-- ⚠️ 如果自己写推理代码，必须在 forward/generate 前调用 `set_rope_pos2d`，否则会报错
-
-详细使用方法请参考：[推理指南](docs/INFERENCE_GUIDE.md)
-
-#### 并行/批量推理
-
-**推荐使用 `scripts/parallel_generate.py`** - 支持多种输入方式、多 GPU 分布式推理：
-
-**方式 1：直接输入问题列表（最常用）**
+统一使用 `scripts/parallel_generate.py` 进行推理，只需调整 `--branches_per_sample` 即可控制一次要回答的问题数量：
 
 ```bash
 torchrun --nproc_per_node 8 scripts/parallel_generate.py \
-  --model_path Qwen/Qwen2.5-14B-Instruct \
+  --hf_base_model Qwen/Qwen2.5-14B-Instruct \
   --lora_path out/lora/qwen2_lora_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
+  --branches_per_sample 3 \
   --out_path out/results.jsonl \
   --max_new_tokens 512 \
   --mode sft \
@@ -1275,44 +1253,23 @@ torchrun --nproc_per_node 8 scripts/parallel_generate.py \
     "自然语言处理的应用"
 ```
 
-**方式 2：从文本文件读取（每行一个问题）**
-
-```bash
-# 创建问题文件
-cat > questions.txt << 'EOF'
-介绍一下人工智能
-讲解深度学习
-自然语言处理的应用
-EOF
-
-# 运行推理
-torchrun --nproc_per_node 8 scripts/parallel_generate.py \
-  --model_path Qwen/Qwen2.5-14B-Instruct \
-  --lora_path out/lora/qwen2_lora_final.pth \
-  --lora_rank 8 \
-  --rope_2d_ratio 0.5 \
-  --prompts_file questions.txt \
-  --out_path out/results.jsonl \
-  --max_new_tokens 512 \
-  --mode sft
-```
-
-**方式 3：从 Parallel 数据集（JSONL）**
+单个问题时，把 `--branches_per_sample` 设为 1 并只传一个 prompt 即可：
 
 ```bash
 torchrun --nproc_per_node 8 scripts/parallel_generate.py \
-  --model_path Qwen/Qwen2.5-14B-Instruct \
+  --hf_base_model Qwen/Qwen2.5-14B-Instruct \
   --lora_path out/lora/qwen2_lora_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
-  --data_path dataset/pretrain_hq_split.jsonl \
+  --branches_per_sample 1 \
   --out_path out/results.jsonl \
-  --branches_per_sample 4 \
-  --max_branches_per_sample 8 \
-  --min_branches_per_sample 1 \
   --max_new_tokens 512 \
-  --mode pretrain
+  --mode sft \
+  --prompts \
+    "介绍一下人工智能"
 ```
+
+> ℹ️ **列式时间轴**：`parallel_generate.py` 会把同一个 sample 内的多个 prompt 按 `branch` 交错排列（例如「问题1 token1 → 问题2 token1 → 问题1 token2 → …」），同时为每个 branch 注入独立的 pos2d/time。这样可以简单地控制“要回答多少个问题”，并保证推理顺序与训练时保持一致。
 
 **特性：**
 - ✅ 支持直接输入问题（不需要准备数据集）
@@ -1324,42 +1281,6 @@ torchrun --nproc_per_node 8 scripts/parallel_generate.py \
 
 详细使用方法请参考：[推理统一指南](docs/INFERENCE_UNIFIED_GUIDE.md)
 
-**其他配置示例：**
-
-```bash
-# 1.5B 模型（显存优化）
-torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
-  --base_model Qwen/Qwen2.5-1.5B-Instruct \
-  --data_path dataset/pretrain_hq_split.jsonl \
-  --lora_rank 16 \
-  --batch_size 2 \
-  --accumulation_steps 2 \
-  --batch_by_samples \
-  --max_branches_per_sample 12 \
-  --min_branches_per_sample 2 \
-  --rope_2d_ratio 0.5 \
-  --learning_rate 5e-5 \
-  --ddp
-
-# 7B 模型（大显存优化）
-torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
-  --base_model Qwen/Qwen2.5-7B-Instruct \
-  --data_path dataset/pretrain_hq_split.jsonl \
-  --lora_rank 32 \
-  --batch_size 1 \
-  --accumulation_steps 4 \
-  --batch_by_samples \
-  --max_branches_per_sample 8 \
-  --min_branches_per_sample 2 \
-  --rope_2d_ratio 0.5 \
-  --learning_rate 2e-5 \
-  --ddp
-```
-
-```bash
-# 注意：model_mode即选择基础模型的类型，这和train_lora是基于哪个模型训练的相关，确保统一即可。
-python eval_model.py --lora_name 'lora_medical' --model_mode 2
-```
 
 **小测试**
 
