@@ -1166,8 +1166,8 @@ python train_lora.py
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
-  --base_model Qwen/Qwen2-0.5B-Instruct \
-  --tokenizer_path Qwen/Qwen2-0.5B-Instruct \
+  --base_model Qwen/Qwen2.5-14B-Instruct \
+  --tokenizer_path Qwen/Qwen2.5-14B-Instruct \
   --data_path dataset/pretrain_hq_split.jsonl \
   --data_mode parallel \
   --lora_name qwen2_parallel_lora \
@@ -1182,7 +1182,6 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --rope_2d_ratio 0.5 \
   --max_total_tokens 0 \
   --learning_rate 1e-4 \
-  --dtype bfloat16 \
   --save_interval 500 \
   --ddp
 ```

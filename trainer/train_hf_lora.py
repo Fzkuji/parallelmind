@@ -184,7 +184,6 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--accumulation_steps", type=int, default=1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-HF-LoRA")
@@ -210,6 +209,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_by_samples", action="store_true")
 
     args = parser.parse_args()
+    args.dtype = "bfloat16"
 
     ddp = int(os.environ.get("RANK", -1)) != -1 if args.ddp else False
     ddp_local_rank, DEVICE = 0, args.device
@@ -351,7 +351,8 @@ if __name__ == "__main__":
     else:
         amp_dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
         ctx = torch.cuda.amp.autocast(dtype=amp_dtype)
-        scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ["float16", "bfloat16"]))
+        # PyTorch 尚未对 bfloat16 提供 GradScaler 实现；仅在 float16 时启用缩放
+        scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == "float16"))
 
     if ddp:
         model = DistributedDataParallel(model, device_ids=[ddp_local_rank])
