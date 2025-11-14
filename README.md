@@ -1167,24 +1167,116 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --base_model Qwen/Qwen2-0.5B-Instruct \
   --tokenizer_path Qwen/Qwen2-0.5B-Instruct \
   --data_path dataset/pretrain_hq_split.jsonl \
-  --lora_name qwen2_medical \
-  --lora_rank 16 \
-  --epochs 3 \
-  --batch_size 16 \
+  --lora_name qwen2_parallel_lora \
+  --lora_rank 8 \
+  --epochs 1 \
+  --batch_size 4 \
+  --accumulation_steps 1 \
   --batch_by_samples \
-  --branches_per_sample 4 \
-  --max_branches_per_sample 8 \
+  --max_branches_per_sample 16 \
+  --min_branches_per_sample 1 \
   --patch_rope \
   --rope_2d_ratio 0.5 \
   --max_total_tokens 0 \
-  --save_interval 200
+  --learning_rate 1e-4 \
+  --dtype bfloat16 \
+  --save_interval 500 \
+  --ddp
 ```
 
-- `--patch_rope / --rope_2d_ratio`：一键将 HuggingFace 模型的 RoPE 替换成 MiniMind 的 Interleaved 2D 版本；若想关闭可加 `--no_patch_rope`。
-- `--base_model / --tokenizer_path`：任意 CausalLM 模型或本地路径，LoRA 权重会保存在 `out/lora/<lora_name>_<tag>.pth` 中。
-- `--load_lora`：支持恢复已有 LoRA 继续训练；`--lora_rank`、`--epochs`、`--batch_size` 等参数与 `train_lora.py` 一致。
-- Parallel 数据相关：`--branches_per_sample / --max_branches_per_sample / --batch_by_samples` 用于控制 collator 打包策略；`--max_total_tokens 0` 表示按真实长度运行，不额外 pad。
-- 训练完成后，可继续用 `eval_model.py` 挂载 LoRA 权重进行推理，或者直接在 HuggingFace pipeline 中加载 LoRA。
+**关键参数说明：**
+
+- `--base_model / --tokenizer_path`：任意 HuggingFace CausalLM 模型名称或本地路径
+- `--patch_rope / --rope_2d_ratio`：自动将 HuggingFace 模型的 RoPE 替换为 2D RoPE（支持 branch + time 二维位置编码）；若想关闭可加 `--no_patch_rope`
+- `--lora_rank`：LoRA 的秩，控制可训练参数量（小模型建议 4-8，大模型建议 16-32）
+- `--batch_by_samples`：按样本数而非 branch 数批次，配合动态 branch 模式使用
+- `--max_branches_per_sample / --min_branches_per_sample`：动态 branch 模式，每个样本的 branch 数量在 [min, max] 范围内
+- `--max_total_tokens 0`：不固定 padding 长度，按实际序列长度动态分配显存
+- `--load_lora`：支持加载已有 LoRA 权重继续训练
+
+**输出文件：**
+- LoRA 权重保存在 `out/lora/<lora_name>_<model_tag>.pth`（训练中）和 `out/lora/<lora_name>_<model_tag>_final.pth`（训练结束）
+
+#### LoRA 推理
+
+训练完成后，使用以下方式进行推理：
+
+**1. 交互式对话（推荐）**
+
+```bash
+python scripts/inference_hf_lora.py \
+  --base_model Qwen/Qwen2-0.5B-Instruct \
+  --lora_path out/lora/qwen2_parallel_lora_hf_final.pth \
+  --lora_rank 8 \
+  --rope_2d_ratio 0.5 \
+  --mode chat
+```
+
+**2. 单次生成**
+
+```bash
+python scripts/inference_hf_lora.py \
+  --base_model Qwen/Qwen2-0.5B-Instruct \
+  --lora_path out/lora/qwen2_parallel_lora_hf_final.pth \
+  --lora_rank 8 \
+  --mode generate \
+  --prompt "请介绍一下人工智能"
+```
+
+**3. Python 代码调用**
+
+```python
+from scripts.inference_hf_lora import load_model_with_lora, generate_text
+
+# 加载模型
+model, tokenizer = load_model_with_lora(
+    base_model="Qwen/Qwen2-0.5B-Instruct",
+    lora_path="out/lora/qwen2_parallel_lora_hf_final.pth",
+    lora_rank=8,
+)
+
+# 生成
+response = generate_text(model, tokenizer, "你好")
+```
+
+**重要提示**：
+- `--lora_rank` 必须与训练时一致
+- `--rope_2d_ratio` 必须与训练时一致
+- 如果训练时没用 `--patch_rope`，推理时加上 `--no_patch_rope`
+
+详细使用方法请参考：[推理指南](docs/INFERENCE_GUIDE.md)
+
+**其他配置示例：**
+
+```bash
+# 1.5B 模型（显存优化）
+torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
+  --base_model Qwen/Qwen2.5-1.5B-Instruct \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --lora_rank 16 \
+  --batch_size 2 \
+  --accumulation_steps 2 \
+  --batch_by_samples \
+  --max_branches_per_sample 12 \
+  --min_branches_per_sample 2 \
+  --rope_2d_ratio 0.5 \
+  --learning_rate 5e-5 \
+  --ddp
+
+# 7B 模型（大显存优化）
+torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
+  --base_model Qwen/Qwen2.5-7B-Instruct \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --lora_rank 32 \
+  --batch_size 1 \
+  --accumulation_steps 4 \
+  --batch_by_samples \
+  --max_branches_per_sample 8 \
+  --min_branches_per_sample 2 \
+  --rope_2d_ratio 0.5 \
+  --learning_rate 2e-5 \
+  --ddp
+```
 
 ```bash
 # 注意：model_mode即选择基础模型的类型，这和train_lora是基于哪个模型训练的相关，确保统一即可。
