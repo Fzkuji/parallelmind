@@ -1197,8 +1197,9 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --sft_pad_min 0 \
   --sft_pad_max 32 \
   --batch_size 4 \
+  --accumulation_steps 4 \
   --batch_by_samples \
-  --max_branches_per_sample 8 \
+  --max_branches_per_sample 4 \
   --min_branches_per_sample 1 \
   --rope_2d_ratio 0.5 \
   --lora_rank 8 \
@@ -1251,6 +1252,8 @@ torchrun --nproc_per_node 8 scripts/parallel_generate.py \
     "讲解深度学习的原理" \
     "自然语言处理的应用"
 ```
+
+> 指定 `--hf_base_model` 后会自动使用该 tokenizer 的 `apply_chat_template`，无需再手动加 `--chat_template`，从而保证提示格式和训练阶段一致。
 
 单个问题时，把 `--branches_per_sample` 设为 1 并只传一个 prompt 即可：
 

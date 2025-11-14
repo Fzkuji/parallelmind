@@ -197,6 +197,14 @@ def generate_text(
         repetition_penalty: 重复惩罚
         device: 设备
     """
+    # 构造和训练一致的模板
+    if hasattr(tokenizer, "apply_chat_template"):
+        prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
     # 编码输入
     inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
     input_ids = inputs["input_ids"].to(device)

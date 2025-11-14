@@ -670,6 +670,9 @@ def main():
         args.hf_base_model = args.model_path
         args.model_path = ""
 
+    if args.hf_base_model:
+        args.chat_template = True
+
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
