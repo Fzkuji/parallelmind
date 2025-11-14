@@ -360,7 +360,8 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
             print(f"  {mask_str}")
 
         # 初始prefill
-        column_mask = build_columnar_causal_mask(time_ids, attn_mask).to(device=device, dtype=torch.float32)
+        column_mask = build_columnar_causal_mask(time_ids, attn_mask)
+        column_mask = column_mask.to(device=device, dtype=param_dtype)
         forward_kwargs = {
             "input_ids": input_ids,
             "attention_mask": column_mask,
@@ -539,11 +540,12 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
 
             # 3. 构造因果mask (基于time的因果关系)
             # 关键: 只能看到time < 当前token的time 的所有token
+            mask_fill = torch.tensor(-1e4, dtype=param_dtype, device=device)
             incremental_mask = torch.full(
                 (1, 1, num_new, total_len),
-                fill_value=torch.finfo(torch.float32).min,
+                fill_value=mask_fill.item(),
                 device=device,
-                dtype=torch.float32,
+                dtype=param_dtype,
             )
 
             for i in range(num_new):
