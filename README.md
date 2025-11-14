@@ -1166,8 +1166,8 @@ python train_lora.py
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
-  --base_model Qwen/Qwen2.5-14B-Instruct \
-  --tokenizer_path Qwen/Qwen2.5-14B-Instruct \
+  --base_model Qwen/Qwen2.5-1.5B-Instruct \
+  --tokenizer_path Qwen/Qwen2.5-1.5B-Instruct \
   --data_path dataset/pretrain_hq_split.jsonl \
   --data_mode parallel \
   --lora_name qwen2_parallel_lora \
@@ -1190,7 +1190,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
-  --base_model Qwen/Qwen2.5-14B-Instruct \
+  --base_model Qwen/Qwen2.5-1.5B-Instruct \
   --data_path dataset/sft_512.jsonl \
   --data_mode parallel_sft \
   --parallel_cache_dir out/parallel_cache \
@@ -1212,7 +1212,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 - 所有 user / assistant 回合被拆成 branch，LoRA 仅对 answer 部分计算 loss；
 - 支持随机 padding (`--sft_pad_min/max`) 让不同分支在时间轴上错位出现，保持真实对话节奏；
 - 结果会缓存到 `out/parallel_cache/*.jsonl` 中，重复训练直接复用；
-- 若需要重新生成，加 `--rebuild_parallel_cache`。也可以手动调用 `python scripts/convert_sft_to_parallel.py --input dataset/sft_512.jsonl --output dataset/sft_parallel.jsonl --tokenizer Qwen/Qwen2.5-14B-Instruct`，然后用 `--data_mode parallel` 指向转换文件。
+- 若需要重新生成，加 `--rebuild_parallel_cache`。也可以手动调用 `python scripts/convert_sft_to_parallel.py --input dataset/sft_512.jsonl --output dataset/sft_parallel.jsonl --tokenizer Qwen/Qwen2.5-1.5B-Instruct`，然后用 `--data_mode parallel` 指向转换文件。
 
 新增参数速览：
 
@@ -1239,7 +1239,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 
 ```bash
 torchrun --nproc_per_node 8 scripts/parallel_generate.py \
-  --hf_base_model Qwen/Qwen2.5-14B-Instruct \
+  --hf_base_model Qwen/Qwen2.5-1.5B-Instruct \
   --lora_path out/lora/qwen2_lora_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
@@ -1259,7 +1259,7 @@ torchrun --nproc_per_node 8 scripts/parallel_generate.py \
 
 ```bash
 torchrun --nproc_per_node 8 scripts/parallel_generate.py \
-  --hf_base_model Qwen/Qwen2.5-14B-Instruct \
+  --hf_base_model Qwen/Qwen2.5-1.5B-Instruct \
   --lora_path out/lora/qwen2_lora_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
