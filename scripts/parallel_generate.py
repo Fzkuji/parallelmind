@@ -684,9 +684,6 @@ def main():
     parser.add_argument("--streaming", action="store_true", help="启用流式生成显示")
     parser.add_argument("--pe", type=str, choices=['rope', 'fpe'], default=None, help="位置编码类型（不指定则自动检测）")
     parser.add_argument("--out_path", type=str, default="", help="生成结果保存为 JSONL（分布式会自动按 rank 拆分）")
-    parser.add_argument("--interleave_branches", action="store_true", dest="interleave_branches", help="启用分支交错模式（默认）")
-    parser.add_argument("--no_interleave_branches", action="store_false", dest="interleave_branches", help="禁用分支交错模式")
-    parser.set_defaults(interleave_branches=True)
     args = parser.parse_args()
 
     if args.data_path and not args.prompts_file:
