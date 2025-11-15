@@ -224,7 +224,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branch_count = len(branch_inputs)
         placeholder_flags = list(placeholders) if placeholders is not None else [False] * branch_count
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
-        branch_generated_meta: List[List[Tuple[int, int]]] = [[] for _ in range(branch_count)]
+        branch_generated_meta: List[List[Tuple[int, int, int]]] = [[] for _ in range(branch_count)]
 
         # 记录当前序列
         seq_len = int(attn_mask.sum().item())
@@ -331,17 +331,20 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                     print(f"Branch {branch_idx} first token: {token_id} -> '{decoded}' (EOS={is_eos}, eos_id={eos_id})")
 
                 # 检查是否结束
+                abs_index = len(time_list) + len(new_pos1d)
+                branch_time = branch_current_times[branch_idx]
+
                 if eos_id is not None and token_id == eos_id:
                     stop_flags[branch_idx] = True
                     branch_generated[branch_idx].append(token_id)
-                    branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_current_times[branch_idx]))
+                    branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_time, abs_index))
                     if debug:
                         print(f"  -> Branch {branch_idx} hit EOS immediately at step {step_idx}")
                     continue
 
                 # 记录生成的token
                 branch_generated[branch_idx].append(token_id)
-                branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_current_times[branch_idx]))
+                branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_time, abs_index))
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
 
@@ -353,13 +356,9 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                         skip_special_tokens=True
                     )
 
-                # 计算2D位置 (每个分支使用自己的time!)
-                branch_time = branch_current_times[branch_idx]
+                # 计算2D/1D位置
                 new_pos2d.append([branch_positions[branch_idx], branch_time])
-
-                # 计算1D位置
-                position_index = len(time_list) + len(new_pos1d)
-                new_pos1d.append(position_index)
+                new_pos1d.append(abs_index)
 
             # 如果没有活跃分支,退出
             if not new_tokens:
@@ -434,7 +433,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 print(f"Branch {idx} generated {len(generated)} tokens: {generated[:10]}{'...' if len(generated) > 10 else ''}")
 
         results: List[str] = []
-        branch_token_meta: List[List[Tuple[int, int]]] = []
+        branch_token_meta: List[List[Tuple[int, int, int]]] = []
         for idx, generated in enumerate(branch_generated):
             if eos_id is not None and eos_id in generated:
                 eos_index = generated.index(eos_id)
@@ -460,7 +459,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 if not meta:
                     print(f"Branch {idx} token positions: []")
                     continue
-                snippet = " ".join(f"({b},{t})" for b, t in meta[:32])
+                snippet = " ".join(f"(pos={b},t={t},abs={a})" for b, t, a in meta[:32])
                 if len(meta) > 32:
                     snippet += " ..."
                 print(f"Branch {idx} token positions ({len(meta)} tokens): {snippet}")

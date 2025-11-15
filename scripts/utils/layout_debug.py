@@ -49,7 +49,7 @@ def dump_branch_layout(
 
 
 def dump_generated_sequences(
-    branch_meta: Sequence[Sequence[Tuple[int, int]]],
+    branch_meta: Sequence[Sequence[Tuple[int, int, int]]],
     branch_tokens: Sequence[Sequence[int]],
     tokenizer: PreTrainedTokenizer,
 ) -> None:
@@ -69,9 +69,10 @@ def dump_generated_sequences(
             if meta is None:
                 print(f"    #{pos:02d} id={token_id:5d} text='{token_text}' (meta unavailable)")
                 continue
-            branch_pos, time_val = meta
+            branch_pos, time_val, abs_idx = meta
             source_time = time_val - 1
             print(
                 f"    #{pos:02d} id={token_id:5d} text='{token_text}' "
-                f"@ branch_pos={branch_pos:4d} time={time_val:4d} (predicted from time={source_time:4d})"
+                f"@ branch_pos={branch_pos:4d} time={time_val:4d} abs_idx={abs_idx:5d} "
+                f"(predicted from time={source_time:4d})"
             )
