@@ -205,46 +205,6 @@ def generate_text(
             add_generation_prompt=True,
         )
 
-    # 编码输入
-    inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
-    input_ids = inputs["input_ids"].to(device)
-
-    print(f"\n{'=' * 80}")
-    print(f"输入提示:")
-    print(f"{'-' * 80}")
-    print(prompt)
-    print(f"{'=' * 80}\n")
-
-    if getattr(model, "_uses_pos2d", False):
-        _set_prompt_pos2d(model, input_ids)
-
-    # 生成
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            do_sample=True,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-
-    output_tokens = outputs[0]
-    generated_tokens = output_tokens[input_ids.shape[-1]:]
-    response = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-
-    print(f"{'=' * 80}")
-    print(f"生成结果:")
-    print(f"{'-' * 80}")
-    print(response)
-    print(f"{'=' * 80}\n")
-
-    return response
-
-
 def interactive_chat(
     model,
     tokenizer,
@@ -325,16 +285,9 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
 
-    # 推理模式
-    parser.add_argument("--mode", type=str, default="chat", choices=["chat", "generate"], help="推理模式")
-    parser.add_argument("--prompt", type=str, default=None, help="单次生成的提示（mode=generate）")
-
-    # 生成参数
     parser.add_argument("--max_new_tokens", type=int, default=512, help="最大生成 token 数")
     parser.add_argument("--temperature", type=float, default=0.7, help="温度")
     parser.add_argument("--top_p", type=float, default=0.9, help="nucleus sampling")
-    parser.add_argument("--top_k", type=int, default=50, help="top-k sampling")
-    parser.add_argument("--repetition_penalty", type=float, default=1.1, help="重复惩罚")
 
     args = parser.parse_args()
 
@@ -349,32 +302,14 @@ def main():
         dtype=args.dtype,
     )
 
-    # 推理
-    if args.mode == "chat":
-        interactive_chat(
-            model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            device=args.device,
-        )
-    elif args.mode == "generate":
-        if args.prompt is None:
-            print("错误: generate 模式需要指定 --prompt")
-            return
-
-        generate_text(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=args.prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
-            repetition_penalty=args.repetition_penalty,
-            device=args.device,
-        )
+    interactive_chat(
+        model=model,
+        tokenizer=tokenizer,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        device=args.device,
+    )
 
 
 if __name__ == "__main__":
