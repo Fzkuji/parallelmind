@@ -224,7 +224,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         branch_count = len(branch_inputs)
         placeholder_flags = list(placeholders) if placeholders is not None else [False] * branch_count
         branch_generated: List[List[int]] = [[] for _ in range(branch_count)]
-        branch_generated_meta: List[List[Tuple[int, int, int]]] = [[] for _ in range(branch_count)]
+        branch_generated_meta: List[List[Tuple[int, int, int, int]]] = [[] for _ in range(branch_count)]
 
         # 记录当前序列
         seq_len = int(attn_mask.sum().item())
@@ -234,6 +234,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         # 为每个branch维护独立的当前time（独立生成模式）
         # 每个branch从自己问题结束后的time继续
         branch_current_times = []
+        branch_last_abs_idx = []
         for branch_idx in range(branch_count):
             # 找到该branch的最大time
             branch_pos = branch_positions[branch_idx]
@@ -244,6 +245,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 branch_current_times.append(max(branch_times) + 1)
             else:
                 branch_current_times.append(0)
+            branch_last_abs_idx.append(metadata.branch_pos1d_end[branch_idx])
 
         if debug:
             print(f"\n=== Generation Start (Independent Mode) ===")
@@ -333,20 +335,27 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 # 检查是否结束
                 abs_index = len(time_list) + len(new_pos1d)
                 branch_time = branch_current_times[branch_idx]
+                source_abs_idx = branch_last_abs_idx[branch_idx]
 
                 if eos_id is not None and token_id == eos_id:
                     stop_flags[branch_idx] = True
                     branch_generated[branch_idx].append(token_id)
-                    branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_time, abs_index))
+                    branch_generated_meta[branch_idx].append(
+                        (branch_positions[branch_idx], branch_time, abs_index, source_abs_idx)
+                    )
+                    branch_last_abs_idx[branch_idx] = abs_index
                     if debug:
                         print(f"  -> Branch {branch_idx} hit EOS immediately at step {step_idx}")
                     continue
 
                 # 记录生成的token
                 branch_generated[branch_idx].append(token_id)
-                branch_generated_meta[branch_idx].append((branch_positions[branch_idx], branch_time, abs_index))
+                branch_generated_meta[branch_idx].append(
+                    (branch_positions[branch_idx], branch_time, abs_index, source_abs_idx)
+                )
                 new_tokens.append(token_id)
                 active_branch_indices.append(branch_idx)
+                branch_last_abs_idx[branch_idx] = abs_index
 
                 # Streaming更新
                 if streaming:
@@ -433,7 +442,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 print(f"Branch {idx} generated {len(generated)} tokens: {generated[:10]}{'...' if len(generated) > 10 else ''}")
 
         results: List[str] = []
-        branch_token_meta: List[List[Tuple[int, int, int]]] = []
+        branch_token_meta: List[List[Tuple[int, int, int, int]]] = []
         for idx, generated in enumerate(branch_generated):
             if eos_id is not None and eos_id in generated:
                 eos_index = generated.index(eos_id)
@@ -459,7 +468,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                 if not meta:
                     print(f"Branch {idx} token positions: []")
                     continue
-                snippet = " ".join(f"(pos={b},t={t},abs={a})" for b, t, a in meta[:32])
+                snippet = " ".join(f"(pos={b},t={t},abs={a},src_abs={s})" for b, t, a, s in meta[:32])
                 if len(meta) > 32:
                     snippet += " ..."
                 print(f"Branch {idx} token positions ({len(meta)} tokens): {snippet}")
