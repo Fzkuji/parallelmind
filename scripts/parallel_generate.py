@@ -139,6 +139,7 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
         pad_to=None,
         align_to=align_mode,
         interleave_branches=use_interleave,
+        branch_stride=args.branch_stride,
     )
 
     if getattr(args, "print_layout", False):
@@ -491,6 +492,7 @@ def main():
     parser.add_argument("--branches_per_sample", type=int, default=4)
     parser.add_argument("--max_branches_per_sample", type=int, default=None)
     parser.add_argument("--min_branches_per_sample", type=int, default=1)
+    parser.add_argument("--branch_stride", type=int, default=128, help="分支在 pos2d 中的步长")
     parser.add_argument("--batch_by_samples", action="store_true")
     parser.add_argument("--max_total_tokens", type=int, default=0)
     parser.add_argument("--out_dir", type=str, default="out")

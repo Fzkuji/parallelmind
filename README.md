@@ -1201,6 +1201,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --batch_by_samples \
   --max_branches_per_sample 4 \
   --min_branches_per_sample 1 \
+  --branch_stride 256 \
   --align_to right \
   --rope_2d_ratio 0.5 \
   --lora_rank 8 \
@@ -1228,6 +1229,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 - `--lora_rank`：LoRA 的秩，控制可训练参数量（小模型建议 4-8，大模型建议 16-32）
 - `--batch_by_samples`：按样本数而非 branch 数批次，配合动态 branch 模式使用
 - `--max_branches_per_sample / --min_branches_per_sample`：动态 branch 模式，每个样本的 branch 数量在 [min, max] 范围内
+- `--branch_stride`：不同分支在 2D RoPE X 轴上的步长，调大会增大分支之间的坐标间隔
 - `--align_to left/right`：列式布局的对齐方式（left=默认，right=在时间轴上右对齐，让末尾对齐）
 - `--max_total_tokens 0`：不固定 padding 长度，按实际序列长度动态分配显存
 - `--load_lora`：支持加载已有 LoRA 权重继续训练
@@ -1245,6 +1247,7 @@ python scripts/parallel_generate.py \
   --lora_path out/lora/hf_lora_hf_final.pth \
   --lora_rank 8 \
   --rope_2d_ratio 0.5 \
+  --branch_stride 256 \
   --branches_per_sample 3 \
   --out_path out/results.jsonl \
   --max_new_tokens 512 \
