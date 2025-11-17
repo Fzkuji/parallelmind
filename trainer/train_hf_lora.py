@@ -53,6 +53,38 @@ def auto_pair_indices(model, ratio: float):
     return list(range(start, freq_count + 1))
 
 
+
+
+def compute_neg_branch_loss(log_probs, batch, lambda_neg: float):
+    if lambda_neg <= 0:
+        return 0.0, 0
+    input_ids = batch["input_ids"]  # [B, T]
+    attn = batch["attention_mask"]  # [B, T]
+    time_ids = batch.get("time_ids")
+    pos2d = batch.get("pos2d")
+    if time_ids is None or pos2d is None:
+        return 0.0, 0
+
+    neg_loss = input_ids.new_zeros([1], dtype=log_probs.dtype, device=log_probs.device)
+    neg_count = 0
+    batch_size, seq_len = input_ids.shape
+    for b in range(batch_size):
+        valid = attn[b].bool()
+        t_ids = time_ids[b]
+        p2 = pos2d[b]
+        for i in range(seq_len):
+            if not valid[i]:
+                continue
+            time_i = t_ids[i]
+            branch_i = p2[i, 0]
+            # 找到同一时间的其他分支位置
+            mask_same_time = (t_ids == time_i) & valid & (p2[:, 0] != branch_i)
+            if mask_same_time.any():
+                targets = input_ids[b][mask_same_time]
+                neg_loss = neg_loss - log_probs[b, i, targets].mean()
+                neg_count += 1
+    return neg_loss, neg_count
+
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
     start_time = time.time()
@@ -90,6 +122,13 @@ def train_epoch(epoch, wandb):
                 logits.view(-1, logits.size(-1)),
                 labels.view(-1),
             )
+
+            # 跨分支负样本惩罚，降低当前分支去预测同列其他分支token的概率
+            if args.lambda_neg_branch > 0:
+                log_probs = torch.log_softmax(logits, dim=-1)
+                neg_loss, neg_count = compute_neg_branch_loss(log_probs, batch, args.lambda_neg_branch)
+                if neg_count > 0:
+                    loss = loss + args.lambda_neg_branch * (neg_loss / neg_count)
 
             # 如果有 MoE 的 aux_loss
             if hasattr(outputs, "aux_loss") and outputs.aux_loss is not None:
@@ -213,6 +252,12 @@ if __name__ == "__main__":
         choices=["left", "right"],
         default="left",
         help="列式布局对齐方式（left=默认，right=末尾对齐）",
+    )
+    parser.add_argument(
+        "--lambda_neg_branch",
+        type=float,
+        default=0.0,
+        help=">0 时启用跨分支负样本惩罚，值为权重系数",
     )
 
     args = parser.parse_args()

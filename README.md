@@ -1201,7 +1201,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --batch_by_samples \
   --max_branches_per_sample 4 \
   --min_branches_per_sample 1 \
-  --branch_stride 256 \
+  --branch_stride 512 \
   --align_to right \
   --rope_2d_ratio 0.5 \
   --lora_rank 8 \
