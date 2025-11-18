@@ -55,7 +55,8 @@ def auto_pair_indices(model, ratio: float):
 
 
 
-def compute_neg_branch_loss(log_probs, batch, lambda_neg: float):
+def compute_neg_branch_loss(log_probs, batch, labels, lambda_neg: float):
+    """额外惩罚：同一time列其他分支的token不应被当前分支高概率预测（矢量化）。"""
     if lambda_neg <= 0:
         return 0.0, 0
     input_ids = batch["input_ids"]  # [B, T]
@@ -65,24 +66,56 @@ def compute_neg_branch_loss(log_probs, batch, lambda_neg: float):
     if time_ids is None or pos2d is None:
         return 0.0, 0
 
-    neg_loss = input_ids.new_zeros([1], dtype=log_probs.dtype, device=log_probs.device)
+    neg_loss = input_ids.new_zeros([], dtype=log_probs.dtype, device=log_probs.device)
     neg_count = 0
     batch_size, seq_len = input_ids.shape
+
     for b in range(batch_size):
         valid = attn[b].bool()
+        if not valid.any():
+            continue
         t_ids = time_ids[b]
-        p2 = pos2d[b]
-        for i in range(seq_len):
-            if not valid[i]:
-                continue
-            time_i = t_ids[i]
-            branch_i = p2[i, 0]
-            # 找到同一时间的其他分支位置
-            mask_same_time = (t_ids == time_i) & valid & (p2[:, 0] != branch_i)
-            if mask_same_time.any():
-                targets = input_ids[b][mask_same_time]
-                neg_loss = neg_loss - log_probs[b, i, targets].mean()
-                neg_count += 1
+        branches = pos2d[b, :, 0]
+        lbls = labels[b]
+
+        # 只保留有效位置
+        valid_idx = valid.nonzero(as_tuple=True)[0]
+        if valid_idx.numel() == 0:
+            continue
+
+        # 构造 time 相等且 branch 不同的矩阵掩码 [L,L]
+        t_v = t_ids[valid_idx]
+        br_v = branches[valid_idx]
+        ids_v = input_ids[b][valid_idx]
+        lbl_v = lbls[valid_idx]
+        lp_v = log_probs[b][valid_idx]  # [L,V]
+
+        time_eq = t_v[:, None] == t_v[None, :]
+        branch_diff = br_v[:, None] != br_v[None, :]
+        pair_mask = time_eq & branch_diff
+
+        if not pair_mask.any():
+            continue
+
+        # 排除 label 为 -100 的行
+        lbl_valid = lbl_v != -100
+        if not lbl_valid.any():
+            continue
+        pair_mask = pair_mask & lbl_valid[:, None]
+
+        # 排除目标 token 与当前 label 相同的对
+        target_ne_label = ids_v[None, :] != lbl_v[:, None]
+        pair_mask = pair_mask & target_ne_label
+
+        if not pair_mask.any():
+            continue
+
+        src_idx, tgt_idx = pair_mask.nonzero(as_tuple=True)
+        # 取对应的 log_prob 分值（当前 token 对其他分支 token 的概率）
+        selected_log_probs = lp_v[src_idx, ids_v[tgt_idx]]
+        neg_loss = neg_loss - selected_log_probs.sum()
+        neg_count += selected_log_probs.numel()
+
     return neg_loss, neg_count
 
 def train_epoch(epoch, wandb):
@@ -126,7 +159,7 @@ def train_epoch(epoch, wandb):
             # 跨分支负样本惩罚，降低当前分支去预测同列其他分支token的概率
             if args.lambda_neg_branch > 0:
                 log_probs = torch.log_softmax(logits, dim=-1)
-                neg_loss, neg_count = compute_neg_branch_loss(log_probs, batch, args.lambda_neg_branch)
+                neg_loss, neg_count = compute_neg_branch_loss(log_probs, batch, labels, args.lambda_neg_branch)
                 if neg_count > 0:
                     loss = loss + args.lambda_neg_branch * (neg_loss / neg_count)
 
