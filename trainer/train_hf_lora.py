@@ -55,18 +55,11 @@ def auto_pair_indices(model, ratio: float):
 
 
 
-def compute_neg_branch_loss(log_probs, batch, labels, lambda_neg: float):
+def compute_neg_branch_loss(log_probs, labels, input_ids, attn, time_ids, pos2d, lambda_neg: float):
     """额外惩罚：同一time列其他分支的token不应被当前分支高概率预测（矢量化）。"""
     if lambda_neg <= 0:
         return 0.0, 0
-    input_ids = batch["input_ids"]  # [B, T]
-    attn = batch["attention_mask"]  # [B, T]
-    time_ids = batch.get("time_ids")
-    pos2d = batch.get("pos2d")
-    if time_ids is None or pos2d is None:
-        return 0.0, 0
-
-    neg_loss = input_ids.new_zeros([], dtype=log_probs.dtype, device=log_probs.device)
+    neg_loss = log_probs.new_zeros([])
     neg_count = 0
     batch_size, seq_len = input_ids.shape
 
@@ -159,7 +152,15 @@ def train_epoch(epoch, wandb):
             # 跨分支负样本惩罚，降低当前分支去预测同列其他分支token的概率
             if args.lambda_neg_branch > 0:
                 log_probs = torch.log_softmax(logits, dim=-1)
-                neg_loss, neg_count = compute_neg_branch_loss(log_probs, batch, labels, args.lambda_neg_branch)
+                neg_loss, neg_count = compute_neg_branch_loss(
+                    log_probs,
+                    labels,
+                    input_ids,
+                    attention_mask,
+                    time_ids,
+                    pos2d,
+                    args.lambda_neg_branch,
+                )
                 if neg_count > 0:
                     loss = loss + args.lambda_neg_branch * (neg_loss / neg_count)
 
