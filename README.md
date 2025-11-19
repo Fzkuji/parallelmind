@@ -1158,11 +1158,11 @@ python train_lora.py
 此时【基础模型+LoRA模型】即可获得医疗场景模型增强的能力，相当于为基础模型增加了LoRA外挂，这个过程并不损失基础模型的本身能力。
 我们可以通过`eval_model.py`进行模型评估测试。
 
-#### HuggingFace 模型 + 2D RoPE 的 LoRA 微调
+#### HuggingFace 模型 + 2D RoPE 微调（LoRA / 全参）
 
-> 📚 **快速上手**：查看 [HuggingFace + LoRA 快速开始指南](docs/QUICK_START_LORA.md) 获取完整示例和最佳实践
+> 📚 **快速上手**：可选 LoRA 或全参。LoRA 用 `trainer/train_hf_lora.py`，全参用 `trainer/train_hf_full.py`。
 
-若想直接在 HuggingFace 的基础模型（例如 Qwen/Qwen2、Llama 等）上复用 MiniMind 的 2D RoPE 设计并继续 LoRA 微调，可以使用 `trainer/train_hf_lora.py`：
+**LoRA 微调（轻量，参数少，加载快）**
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
@@ -1186,7 +1186,29 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --ddp
 ```
 
-> 💡 **对话式 SFT JSONL？直接加 `--data_mode parallel_sft` 即可**
+**全参微调（容量大，需更多显存）**
+
+```bash
+torchrun --nproc_per_node 8 trainer/train_hf_full.py \
+  --base_model Qwen/Qwen2.5-1.5B-Instruct \
+  --tokenizer_path Qwen/Qwen2.5-1.5B-Instruct \
+  --data_path dataset/pretrain_hq_split.jsonl \
+  --data_mode parallel \
+  --epochs 1 \
+  --batch_size 4 \
+  --accumulation_steps 1 \
+  --batch_by_samples \
+  --max_branches_per_sample 16 \
+  --min_branches_per_sample 1 \
+  --patch_rope \
+  --rope_2d_ratio 0.5 \
+  --max_total_tokens 0 \
+  --learning_rate 1e-4 \
+  --save_interval 500 \
+  --ddp
+```
+
+> 💡 **对话式 SFT JSONL？直接加 `--data_mode parallel_sft` 即可**（LoRA / 全参均适用）
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
@@ -1206,7 +1228,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --rope_2d_ratio 0.5 \
   --lora_rank 8 \
   --epochs 1 \
-  --save_interval 500 \
+  --save_interval 100 \
   --ddp
 ```
 
@@ -1233,7 +1255,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
 - `--branch_stride`：不同分支在 2D RoPE X 轴上的步长，调大会增大分支之间的坐标间隔
 - `--align_to left/right`：列式布局的对齐方式（left=默认，right=在时间轴上右对齐，让末尾对齐）
 - `--max_total_tokens 0`：不固定 padding 长度，按实际序列长度动态分配显存
-- `--load_lora`：支持加载已有 LoRA 权重继续训练
+- `--load_lora`：支持加载已有 LoRA 权重继续训练（仅 LoRA 脚本）
 
 **输出文件：**
 - LoRA 权重保存在 `out/lora/<lora_name>_<model_tag>.pth`（训练中）和 `out/lora/<lora_name>_<model_tag>_final.pth`（训练结束）
@@ -1256,8 +1278,6 @@ python scripts/parallel_generate.py \
   --align_to right \
   --print_layout \
   --layout_max_tokens 120 \
-  --print_topk \
-  --topk_k 5 \
   --prompts \
     "介绍一下人工智能" \
     "讲解深度学习的原理" \
