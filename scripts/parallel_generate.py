@@ -325,6 +325,16 @@ def columnar_generate(model, branch_inputs: Sequence[Sequence[int]], args, token
                         continue
 
                 # 采样
+                if getattr(args, "print_topk", False):
+                    topk_k = max(1, int(getattr(args, "topk_k", 5)))
+                    probs = torch.softmax(logits, dim=-1)
+                    topk_vals, topk_idx = torch.topk(probs, k=topk_k, dim=-1)
+                    decoded = [tokenizer.decode([tid.item()]).replace("\n", "\\n") for tid in topk_idx]
+                    topk_str = " | ".join(
+                        f"{tid.item():5d}:{p.item():.4f}:'{txt}'" for tid, p, txt in zip(topk_idx, topk_vals, decoded)
+                    )
+                    print(f"[topk] step={step_idx} branch={branch_idx} -> {topk_str}")
+
                 next_token = sample_token(logits, args).to(device)
                 token_id = next_token.item()
 
@@ -511,6 +521,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.85)
     parser.add_argument("--top_p", type=float, default=0.85)
     parser.add_argument("--do_sample", action="store_true")
+    parser.add_argument("--print_topk", action="store_true", help="打印每个分支当前步的 top-k 备选token")
+    parser.add_argument("--topk_k", type=int, default=5, help="打印的top-k数量")
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--max_prompt_length", type=int, default=2048)
     parser.add_argument("--chat_template", action="store_true")

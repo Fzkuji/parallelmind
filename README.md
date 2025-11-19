@@ -1206,6 +1206,7 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --rope_2d_ratio 0.5 \
   --lora_rank 8 \
   --epochs 1 \
+  --save_interval 500 \
   --ddp
 ```
 
@@ -1255,6 +1256,8 @@ python scripts/parallel_generate.py \
   --align_to right \
   --print_layout \
   --layout_max_tokens 120 \
+  --print_topk \
+  --topk_k 5 \
   --prompts \
     "介绍一下人工智能" \
     "讲解深度学习的原理" \

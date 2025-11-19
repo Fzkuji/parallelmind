@@ -83,9 +83,11 @@ def compute_neg_branch_loss(log_probs, labels, input_ids, attn, time_ids, pos2d,
         lbl_v = lbls[valid_idx]
         lp_v = log_probs[b][valid_idx]  # [L,V]
 
+        # time >=0（排除padding），且time相等且branch不同
+        time_nonneg = t_v >= 0
         time_eq = t_v[:, None] == t_v[None, :]
         branch_diff = br_v[:, None] != br_v[None, :]
-        pair_mask = time_eq & branch_diff
+        pair_mask = time_eq & branch_diff & time_nonneg[:, None] & time_nonneg[None, :]
 
         if not pair_mask.any():
             continue
