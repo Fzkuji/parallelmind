@@ -5,28 +5,48 @@ from pathlib import Path
 from typing import Tuple
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
+from parallel.columnar import patch_model_with_interleaved_2d_rope, _find_rotary_holder
 from scripts.inference_hf_lora import load_model_with_lora
 
 
 def load_model(args):
     if args.hf_base_model:
-        if not args.lora_path:
-            raise ValueError("--lora_path 必须指定，用于加载 LoRA 权重")
-        model, tokenizer, patch_rope = load_model_with_lora(
-            base_model=args.hf_base_model,
-            lora_path=args.lora_path,
-            lora_rank=args.lora_rank,
-            rope_2d_ratio=args.rope_2d_ratio,
-            patch_rope=not args.no_patch_rope,
-            device=args.device,
-            dtype=args.hf_dtype,
-        )
-        model._uses_pos2d = patch_rope
+        if args.lora_path:
+            model, tokenizer, patch_rope = load_model_with_lora(
+                base_model=args.hf_base_model,
+                lora_path=args.lora_path,
+                lora_rank=args.lora_rank,
+                rope_2d_ratio=args.rope_2d_ratio,
+                patch_rope=not args.no_patch_rope,
+                device=args.device,
+                dtype=args.hf_dtype,
+            )
+            model._uses_pos2d = patch_rope
+            model._is_hf = True
+            return model, tokenizer
+        # 全参 checkpoint
+        tokenizer = AutoTokenizer.from_pretrained(args.hf_base_model, trust_remote_code=True)
+        if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(
+            args.hf_base_model,
+            trust_remote_code=True,
+            torch_dtype=getattr(torch, args.hf_dtype),
+        ).to(args.device)
+        if args.model_path:
+            state_dict = torch.load(args.model_path, map_location=args.device)
+            model.load_state_dict(state_dict, strict=True)
+        if getattr(args, "patch_rope", True):
+            pair_indices = auto_pair_indices(model, args.rope_2d_ratio)
+            patch_model_with_interleaved_2d_rope(model, pair_indices)
+            model._uses_pos2d = True
+        else:
+            model._uses_pos2d = False
         model._is_hf = True
-        return model, tokenizer
+        return model.eval(), tokenizer
 
     ckpt_path = Path(args.model_path) if args.model_path else _default_ckpt(args)
     if not ckpt_path.exists():
@@ -86,3 +106,14 @@ def _default_ckpt(args) -> Path:
     suffix = "_moe" if args.use_moe else ""
     prefix = "pretrain" if args.mode == "pretrain" else "full_sft"
     return Path(args.out_dir) / f"{prefix}_{args.hidden_size}{suffix}.pth"
+
+
+def auto_pair_indices(model, ratio: float):
+    holder = _find_rotary_holder(model)
+    inv_freq = getattr(holder.rotary_emb, "inv_freq", None)
+    if inv_freq is None:
+        raise RuntimeError("未找到 rotary_emb.inv_freq，无法应用 2D RoPE。")
+    freq_count = inv_freq.numel()
+    pair_count = max(1, min(freq_count, int(round(freq_count * ratio))))
+    start = max(1, freq_count - pair_count + 1)
+    return list(range(start, freq_count + 1))
