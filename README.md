@@ -537,6 +537,7 @@ torchrun --nproc_per_node 8 trainer/train_pretrain.py \
   --ddp
 ```
 
+
 **参数说明**：
 - `--pe fpe`：使用Fourier PE（关键参数）
 - `--batch_by_samples`：按样本数batching（而非token数）
