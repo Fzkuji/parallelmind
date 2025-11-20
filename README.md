@@ -1162,53 +1162,9 @@ python train_lora.py
 
 > 📚 **快速上手**：可选 LoRA 或全参。LoRA 用 `trainer/train_hf_lora.py`，全参用 `trainer/train_hf_full.py`。
 
-**LoRA 微调（轻量，参数少，加载快）**
+**对话式 SFT 微调（选择 LoRA 或全参）**
 
-```bash
-torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
-  --base_model Qwen/Qwen2.5-1.5B-Instruct \
-  --tokenizer_path Qwen/Qwen2.5-1.5B-Instruct \
-  --data_path dataset/pretrain_hq_split.jsonl \
-  --data_mode parallel \
-  --lora_name qwen2_parallel_lora \
-  --lora_rank 8 \
-  --epochs 1 \
-  --batch_size 4 \
-  --accumulation_steps 1 \
-  --batch_by_samples \
-  --max_branches_per_sample 16 \
-  --min_branches_per_sample 1 \
-  --patch_rope \
-  --rope_2d_ratio 0.5 \
-  --max_total_tokens 0 \
-  --learning_rate 1e-4 \
-  --save_interval 500 \
-  --ddp
-```
-
-**全参微调（容量大，需更多显存）**
-
-```bash
-torchrun --nproc_per_node 8 trainer/train_hf_full.py \
-  --base_model Qwen/Qwen2.5-1.5B-Instruct \
-  --tokenizer_path Qwen/Qwen2.5-1.5B-Instruct \
-  --data_path dataset/pretrain_hq_split.jsonl \
-  --data_mode parallel \
-  --epochs 1 \
-  --batch_size 4 \
-  --accumulation_steps 1 \
-  --batch_by_samples \
-  --max_branches_per_sample 16 \
-  --min_branches_per_sample 1 \
-  --patch_rope \
-  --rope_2d_ratio 0.5 \
-  --max_total_tokens 0 \
-  --learning_rate 1e-4 \
-  --save_interval 500 \
-  --ddp
-```
-
-> 💡 **对话式 SFT JSONL？直接加 `--data_mode parallel_sft` 即可**（LoRA / 全参均适用）
+*LoRA 模式（轻量）*
 
 ```bash
 torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
@@ -1227,6 +1183,29 @@ torchrun --nproc_per_node 8 trainer/train_hf_lora.py \
   --align_to right \
   --rope_2d_ratio 0.5 \
   --lora_rank 8 \
+  --epochs 1 \
+  --save_interval 100 \
+  --ddp
+```
+
+*全参模式（容量大）*
+
+```bash
+torchrun --nproc_per_node 8 trainer/train_hf_full.py \
+  --base_model Qwen/Qwen2.5-1.5B-Instruct \
+  --data_path dataset/sft_512.jsonl \
+  --data_mode parallel_sft \
+  --parallel_cache_dir out/parallel_cache \
+  --sft_pad_min 0 \
+  --sft_pad_max 32 \
+  --batch_size 4 \
+  --accumulation_steps 4 \
+  --batch_by_samples \
+  --max_branches_per_sample 4 \
+  --min_branches_per_sample 1 \
+  --branch_stride 512 \
+  --align_to right \
+  --rope_2d_ratio 0.5 \
   --epochs 1 \
   --save_interval 100 \
   --ddp
