@@ -533,6 +533,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_interval", type=int, default=100)
     parser.add_argument('--local_rank', type=int, default=-1)
     parser.add_argument('--hidden_size', default=512, type=int)
+    parser.add_argument('--num_attention_heads', default=8, type=int)
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=8)
@@ -637,6 +638,7 @@ if __name__ == "__main__":
 
     lm_config = MiniMindConfig(
         hidden_size=args.hidden_size,
+        num_attention_heads=args.num_attention_heads,
         num_hidden_layers=args.num_hidden_layers,
         use_moe=args.use_moe,
         pe_type=args.pe,
