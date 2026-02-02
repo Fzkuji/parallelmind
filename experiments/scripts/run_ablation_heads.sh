@@ -77,19 +77,22 @@ fi
 ROPE_RATIOS=("0" "0.25" "0.5" "0.75" "0.875" "1.0")
 ROPE_STRS=("00" "025" "05" "075" "0875" "10")
 
-# 训练分支配置: "min,max,batch_size"
+# 训练分支配置: "min,max,batch_size,accum_steps"
+# 目标：每个 step 总 token 数 ≈ 50w (8卡 × batch × accum × 分支 × 512)
+# 基准：branch=16, batch=8, accum=1 → 8×8×1×16×512=524,288
+# 优先增大 batch_size，OOM 时脚本会自动减半 batch 并加倍 accum
 TRAIN_CONFIGS=(
-    # 固定分支
-    "1,1,8"      # branch=1, batch=8
-    "2,2,4"      # branch=2, batch=4
-    "4,4,2"      # branch=4, batch=2
-    "8,8,1"      # branch=8, batch=1
-    "16,16,1"    # branch=16, batch=1
-    # 动态分支
-    "1,3,4"      # avg=2, batch=4
-    "1,7,2"      # avg=4, batch=2
-    "1,15,1"     # avg=8, batch=1
-    "1,31,1"     # avg=16, batch=1
+    # 固定分支: 尽量用大 batch，accum=1
+    "1,1,128,1"    # branch=1,  batch=128, accum=1, tokens=8×128×1×1×512=524,288
+    "2,2,64,1"     # branch=2,  batch=64,  accum=1, tokens=8×64×1×2×512=524,288
+    "4,4,32,1"     # branch=4,  batch=32,  accum=1, tokens=8×32×1×4×512=524,288
+    "8,8,16,1"     # branch=8,  batch=16,  accum=1, tokens=8×16×1×8×512=524,288
+    "16,16,8,1"    # branch=16, batch=8,   accum=1, tokens=8×8×1×16×512=524,288
+    # 动态分支: 按平均分支数计算
+    "1,3,64,1"     # avg=2,  batch=64,  accum=1, tokens≈524,288
+    "1,7,32,1"     # avg=4,  batch=32,  accum=1, tokens≈524,288
+    "1,15,16,1"    # avg=8,  batch=16,  accum=1, tokens≈524,288
+    "1,31,8,1"     # avg=16, batch=8,   accum=1, tokens≈524,288
 )
 
 # 评估分支列表
@@ -171,24 +174,15 @@ run_training() {
     local MIN_BRANCH=$4
     local MAX_BRANCH=$5
     local BATCH_SIZE=$6
-    local OUT_DIR=$7
+    local ACCUM_STEPS=$7
+    local OUT_DIR=$8
     local MAX_RETRIES=3
     local RETRY=0
-    local ACCUM_STEPS=1
 
     # 检查是否已完成
     if [ "$FORCE_RERUN" = false ] && is_training_completed "$OUT_DIR" "$HIDDEN_SIZE"; then
         log "[SKIP] Training already completed: $OUT_DIR"
         return 0
-    fi
-
-    # 根据 hidden_size 调整 batch size（更大的模型需要更小的 batch）
-    if [ "$HIDDEN_SIZE" -ge 1024 ]; then
-        BATCH_SIZE=$((BATCH_SIZE / 2))
-        ACCUM_STEPS=$((ACCUM_STEPS * 2))
-        if [ $BATCH_SIZE -lt 1 ]; then
-            BATCH_SIZE=1
-        fi
     fi
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
@@ -415,6 +409,7 @@ for NUM_HEADS in "${HEAD_CONFIGS[@]}"; do
             MIN_BRANCH=$(echo $CONFIG | cut -d',' -f1)
             MAX_BRANCH=$(echo $CONFIG | cut -d',' -f2)
             BATCH_SIZE=$(echo $CONFIG | cut -d',' -f3)
+            ACCUM_STEPS=$(echo $CONFIG | cut -d',' -f4)
 
             EXPERIMENT_COUNT=$((EXPERIMENT_COUNT + 1))
 
@@ -436,7 +431,7 @@ for NUM_HEADS in "${HEAD_CONFIGS[@]}"; do
             record_loss "OUT_DIR: $OUT_DIR"
 
             # 训练
-            if ! run_training "$NUM_HEADS" "$HIDDEN_SIZE" "$ROPE_RATIO" "$MIN_BRANCH" "$MAX_BRANCH" "$BATCH_SIZE" "$OUT_DIR"; then
+            if ! run_training "$NUM_HEADS" "$HIDDEN_SIZE" "$ROPE_RATIO" "$MIN_BRANCH" "$MAX_BRANCH" "$BATCH_SIZE" "$ACCUM_STEPS" "$OUT_DIR"; then
                 record_loss "[FAILED] Training failed"
                 FAILED_COUNT=$((FAILED_COUNT + 1))
                 continue
