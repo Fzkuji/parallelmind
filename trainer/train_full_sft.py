@@ -167,6 +167,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_interval", type=int, default=100)
     parser.add_argument('--local_rank', type=int, default=-1)
     parser.add_argument('--hidden_size', default=512, type=int)
+    parser.add_argument('--num_attention_heads', default=8, type=int)
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=4)
@@ -177,6 +178,12 @@ if __name__ == "__main__":
     parser.add_argument('--use_moe', default=False, type=bool)
     parser.add_argument('--pe', type=str, default='rope', choices=['rope', 'fpe'],
                         help='Position encoding: rope (RoPE 2D, branch_stride=128) or fpe (Fourier PE, branch_stride=1)')
+    # Position Encoding 参数
+    parser.add_argument("--rope_2d_ratio", type=float, default=0.5,
+                        help="RoPE 2D中用于branch维度的频率对比例 (0.0-1.0)。默认: 0.5")
+    parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
+    parser.add_argument("--fpe_max_positions", type=int, default=512, help="Fourier PE最大位置数")
+    parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
     default_data_path = os.path.join(root_path, "dataset", "sft_512.jsonl")
     parser.add_argument("--data_path", type=str, default=default_data_path)
 
@@ -191,8 +198,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers,
-                               use_moe=args.use_moe)
+    lm_config = MiniMindConfig(
+        hidden_size=args.hidden_size,
+        num_attention_heads=args.num_attention_heads,
+        num_hidden_layers=args.num_hidden_layers,
+        use_moe=args.use_moe,
+        pe_type=args.pe,
+        rope_2d_ratio=args.rope_2d_ratio,
+        fpe_theta=args.fpe_theta,
+        fpe_max_positions=args.fpe_max_positions,
+        fpe_learnable=args.fpe_learnable,
+    )
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)
     if not os.path.isabs(args.out_dir):
