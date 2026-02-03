@@ -103,10 +103,10 @@ ROPE_STRS=("00" "025" "05" "075" "10")
 # 优先增大 batch_size，OOM 时脚本会自动减半 batch 并加倍 accum
 TRAIN_CONFIGS=(
     # 只训练动态分支: 按平均分支数计算
-    "1,3,16,1"     # avg=2,  batch=16, accum=1, tokens≈131,072
-    "1,7,8,1"      # avg=4,  batch=8,  accum=1, tokens≈131,072
-    "1,15,4,1"     # avg=8,  batch=4,  accum=1, tokens≈131,072
-    "1,31,2,1"     # avg=16, batch=2,  accum=1, tokens≈131,072
+    "1,3,8,2"      # avg=2,  batch=8,  accum=2, tokens≈131,072
+    "1,7,4,2"      # avg=4,  batch=4,  accum=2, tokens≈131,072
+    "1,15,2,2"     # avg=8,  batch=2,  accum=2, tokens≈131,072
+    "1,31,1,2"     # avg=16, batch=1,  accum=2, tokens≈131,072
 )
 
 # 评估分支列表
