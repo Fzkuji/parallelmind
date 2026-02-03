@@ -28,6 +28,33 @@
 # set -e
 
 # ============================================================================
+# 信号处理 - 确保中断时清理子进程，避免 GPU 显存泄漏
+# ============================================================================
+CHILD_PID=""
+
+cleanup() {
+    echo ""
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Received interrupt signal, cleaning up..."
+
+    # 杀死当前运行的子进程
+    if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
+        echo "Killing child process $CHILD_PID..."
+        kill -TERM "$CHILD_PID" 2>/dev/null
+        sleep 2
+        kill -9 "$CHILD_PID" 2>/dev/null
+    fi
+
+    # 杀死所有相关的 torchrun/python 子进程
+    pkill -P $$ 2>/dev/null
+    pkill -9 -f "torchrun.*train_pretrain.py" 2>/dev/null
+
+    echo "Cleanup complete. You can safely restart the script."
+    exit 130
+}
+
+trap cleanup SIGINT SIGTERM
+
+# ============================================================================
 # 配置参数
 # ============================================================================
 
@@ -237,9 +264,14 @@ run_training() {
 
         log "[CMD] $TRAIN_CMD"
 
-        # 运行训练，捕获输出
-        TRAIN_OUTPUT=$(eval "$TRAIN_CMD" 2>&1)
+        # 运行训练，捕获输出，记录 PID 以便中断时清理
+        eval "$TRAIN_CMD" > /tmp/train_output_$$.txt 2>&1 &
+        CHILD_PID=$!
+        wait $CHILD_PID
         TRAIN_EXIT=$?
+        CHILD_PID=""
+        TRAIN_OUTPUT=$(cat /tmp/train_output_$$.txt)
+        rm -f /tmp/train_output_$$.txt
 
         echo "$TRAIN_OUTPUT" >> "$LOG_FILE"
 
