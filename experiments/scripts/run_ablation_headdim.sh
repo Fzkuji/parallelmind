@@ -109,6 +109,40 @@ EVAL_BRANCHES=(1 2 4 8 16 24 32)
 # 工具函数
 # ============================================================================
 
+# 计时相关
+SCRIPT_START_TIME=$(date +%s)
+COMPLETED_EXPERIMENTS=0
+
+# 格式化秒数为 HH:MM:SS
+format_duration() {
+    local seconds=$1
+    local hours=$((seconds / 3600))
+    local minutes=$(((seconds % 3600) / 60))
+    local secs=$((seconds % 60))
+    printf "%02d:%02d:%02d" $hours $minutes $secs
+}
+
+# 计算并显示进度和预估时间
+show_progress() {
+    local current=$1
+    local total=$2
+    local start_time=$3
+
+    local now=$(date +%s)
+    local elapsed=$((now - start_time))
+    local elapsed_str=$(format_duration $elapsed)
+
+    if [ $current -gt 0 ]; then
+        local avg_time=$((elapsed / current))
+        local remaining=$(((total - current) * avg_time))
+        local remaining_str=$(format_duration $remaining)
+        local eta=$(date -d "+${remaining} seconds" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -v+${remaining}S '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "N/A")
+        log ">>> 进度: $current/$total ($(( current * 100 / total ))%) | 已用时: $elapsed_str | 预计剩余: $remaining_str | ETA: $eta"
+    else
+        log ">>> 进度: $current/$total | 已用时: $elapsed_str"
+    fi
+}
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
@@ -455,6 +489,8 @@ for HEAD_DIM in "${HEADDIM_CONFIGS[@]}"; do
             done
 
             COMPLETED_COUNT=$((COMPLETED_COUNT + 1))
+            COMPLETED_EXPERIMENTS=$((COMPLETED_EXPERIMENTS + 1))
+            show_progress $COMPLETED_EXPERIMENTS $TOTAL_EXPERIMENTS $SCRIPT_START_TIME
             record_loss ""
         done
     done
