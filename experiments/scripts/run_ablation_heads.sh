@@ -78,21 +78,21 @@ ROPE_RATIOS=("0" "0.25" "0.5" "0.75" "0.875" "1.0")
 ROPE_STRS=("00" "025" "05" "075" "0875" "10")
 
 # 训练分支配置: "min,max,batch_size,accum_steps"
-# 目标：每个 step 总 token 数 ≈ 25w (8卡 × batch × accum × 分支 × 512)
-# 基准：branch=16, batch=4, accum=1 → 8×4×1×16×512=262,144
+# 目标：每个 step 总 token 数 ≈ 13w (8卡 × batch × accum × 分支 × 512)
+# 基准：branch=16, batch=2, accum=1 → 8×2×1×16×512=131,072
 # 优先增大 batch_size，OOM 时脚本会自动减半 batch 并加倍 accum
 TRAIN_CONFIGS=(
     # 固定分支: 尽量用大 batch，accum=1
-    "1,1,64,1"     # branch=1,  batch=64, accum=1, tokens=8×64×1×1×512=262,144
-    "2,2,32,1"     # branch=2,  batch=32, accum=1, tokens=8×32×1×2×512=262,144
-    "4,4,16,1"     # branch=4,  batch=16, accum=1, tokens=8×16×1×4×512=262,144
-    "8,8,8,1"      # branch=8,  batch=8,  accum=1, tokens=8×8×1×8×512=262,144
-    "16,16,4,1"    # branch=16, batch=4,  accum=1, tokens=8×4×1×16×512=262,144
+    "1,1,32,1"     # branch=1,  batch=32, accum=1, tokens=8×32×1×1×512=131,072
+    "2,2,16,1"     # branch=2,  batch=16, accum=1, tokens=8×16×1×2×512=131,072
+    "4,4,8,1"      # branch=4,  batch=8,  accum=1, tokens=8×8×1×4×512=131,072
+    "8,8,4,1"      # branch=8,  batch=4,  accum=1, tokens=8×4×1×8×512=131,072
+    "16,16,2,1"    # branch=16, batch=2,  accum=1, tokens=8×2×1×16×512=131,072
     # 动态分支: 按平均分支数计算
-    "1,3,32,1"     # avg=2,  batch=32, accum=1, tokens≈262,144
-    "1,7,16,1"     # avg=4,  batch=16, accum=1, tokens≈262,144
-    "1,15,8,1"     # avg=8,  batch=8,  accum=1, tokens≈262,144
-    "1,31,4,1"     # avg=16, batch=4,  accum=1, tokens≈262,144
+    "1,3,16,1"     # avg=2,  batch=16, accum=1, tokens≈131,072
+    "1,7,8,1"      # avg=4,  batch=8,  accum=1, tokens≈131,072
+    "1,15,4,1"     # avg=8,  batch=4,  accum=1, tokens≈131,072
+    "1,31,2,1"     # avg=16, batch=2,  accum=1, tokens≈131,072
 )
 
 # 评估分支列表
