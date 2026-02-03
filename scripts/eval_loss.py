@@ -89,6 +89,7 @@ def load_model_and_tokenizer(args):
     # build config
     lm_config = MiniMindConfig(
         hidden_size=args.hidden_size,
+        num_attention_heads=args.num_attention_heads,
         num_hidden_layers=args.num_hidden_layers,
         use_moe=args.use_moe,
         pe_type=args.pe,
@@ -289,6 +290,7 @@ def main():
 
     # config (for .pth checkpoints)
     parser.add_argument('--hidden_size', type=int, default=512)
+    parser.add_argument('--num_attention_heads', type=int, default=8)
     parser.add_argument('--num_hidden_layers', type=int, default=8)
     parser.add_argument('--use_moe', type=bool, default=False)
 

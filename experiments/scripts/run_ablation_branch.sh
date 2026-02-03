@@ -281,7 +281,6 @@ run_evaluation() {
             --data_path dataset/pretrain_hq_split.jsonl \
             --hidden_size $HIDDEN_SIZE \
             --num_attention_heads $NUM_HEADS \
-            --num_key_value_heads $NUM_KV_HEADS \
             --num_hidden_layers $NUM_LAYERS \
             --pe rope \
             --rope_2d_ratio $ROPE_RATIO \
