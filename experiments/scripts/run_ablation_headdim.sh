@@ -449,7 +449,8 @@ for HEAD_DIM in "${HEADDIM_CONFIGS[@]}"; do
                 BRANCH_STR="${MIN_BRANCH}-${MAX_BRANCH}"
             fi
 
-            OUT_DIR="out/${HIDDEN_SIZE}-d${HEAD_DIM}-h${NUM_HEADS}-r${ROPE_STR}-b${BRANCH_STR}"
+            # 统一输出目录格式（与 branch/heads 脚本一致）
+            OUT_DIR="out/${HIDDEN_SIZE}-h${NUM_HEADS}-r${ROPE_STR}-b${BRANCH_STR}"
 
             log ""
             log ">>> Experiment $EXPERIMENT_COUNT / $TOTAL_EXPERIMENTS"

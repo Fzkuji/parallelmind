@@ -119,6 +119,20 @@ experiments/logs/ablation_headdim/
 3. **OOM 自动重试**：自动减半 batch size，最多重试 3 次
 4. **中断后直接重新运行**：只会继续未完成的部分
 
+### 模型复用
+
+三个脚本使用**统一的输出目录格式**：`out/{hidden_size}-h{num_heads}-r{rope}-b{branch}`
+
+脚本之间存在配置重叠，会自动检测并跳过已训练的模型：
+
+| 脚本 | 重叠配置 |
+|------|----------|
+| branch | hidden=512, heads=8 |
+| heads | 当 heads=8 时 → hidden=512（与 branch 相同） |
+| headdim | 当 dim=64 时 → hidden=512, heads=8（与 branch 相同） |
+
+**运行任意顺序均可**，相同配置只会训练一次。
+
 ### 使用场景
 
 ```bash
@@ -157,23 +171,16 @@ experiments/logs/ablation_headdim/
 
 ## 输出目录命名
 
-### 实验 1 (Branch)
+所有脚本使用统一格式：
 ```
 out/{hidden_size}-h{num_heads}-r{rope_ratio}-b{branch_config}
 ```
-示例: `out/512-h8-r05-bfixed4`, `out/512-h8-r075-b1-15`
 
-### 实验 2 (Heads)
-```
-out/{hidden_size}-h{num_heads}-r{rope_ratio}-b{branch_config}
-```
-示例: `out/1024-h16-r05-bfixed4`, `out/1536-h24-r075-b1-15`
-
-### 实验 3 (HeadDim)
-```
-out/{hidden_size}-d{head_dim}-h{num_heads}-r{rope_ratio}-b{branch_config}
-```
-示例: `out/512-d32-h16-r05-bfixed4`, `out/512-d128-h4-r075-b1-15`
+示例:
+- `out/512-h8-r05-b1-7` (branch/headdim dim=64)
+- `out/1024-h16-r075-b1-15` (heads)
+- `out/512-h16-r05-b1-3` (headdim dim=32)
+- `out/512-h4-r10-b1-31` (headdim dim=128)
 
 ---
 
