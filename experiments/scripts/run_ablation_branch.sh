@@ -102,7 +102,9 @@ ROPE_STRS=("00" "025" "05" "075" "10")
 # 基准：branch=16, batch=2, accum=1 → 8×2×1×16×512=131,072
 # 优先增大 batch_size，OOM 时脚本会自动减半 batch 并加倍 accum
 TRAIN_CONFIGS=(
-    # 只训练动态分支: 按平均分支数计算
+    # 固定 1 分支 (baseline)
+    "1,1,8,1"      # fixed=1, batch=8,  accum=1, tokens≈32,768
+    # 动态分支: 按平均分支数计算
     "1,3,8,1"      # avg=2,  batch=8,  accum=1, tokens≈65,536
     "1,7,4,1"      # avg=4,  batch=4,  accum=1, tokens≈65,536
     "1,15,2,1"     # avg=8,  batch=2,  accum=1, tokens≈65,536
