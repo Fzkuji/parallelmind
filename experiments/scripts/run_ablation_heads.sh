@@ -105,17 +105,15 @@ ROPE_RATIOS=("0" "0.25" "0.5" "0.75" "1.0")
 ROPE_STRS=("00" "025" "05" "075" "10")
 
 # 训练分支配置: "min,max,batch_size,accum_steps"
-# 目标：每个 step 总 token 数 ≈ 13w (8卡 × batch × accum × 分支 × 512)
-# 基准：branch=16, batch=2, accum=1 → 8×2×1×16×512=131,072
+# 目标：每个 step 总 token 数 ≈ 3.2w (8卡 × batch × accum × avg_branch × 512)
 # 优先增大 batch_size，OOM 时脚本会自动减半 batch 并加倍 accum
 TRAIN_CONFIGS=(
     # 固定 1 分支 (baseline)
-    "1,1,16,1"     # fixed=1, batch=16, accum=1, tokens≈65,536
+    "1,1,8,1"      # fixed=1, batch=8, accum=1, tokens=8×8×1×1×512=32,768
     # 动态分支: 按平均分支数计算
-    "1,3,8,1"      # avg=2,  batch=8,  accum=1, tokens≈65,536
-    "1,7,4,1"      # avg=4,  batch=4,  accum=1, tokens≈65,536
-    "1,15,2,1"     # avg=8,  batch=2,  accum=1, tokens≈65,536
-    "1,31,1,1"     # avg=16, batch=1,  accum=1, tokens≈65,536
+    "1,3,4,1"      # avg=2,  batch=4, accum=1, tokens=8×4×1×2×512=32,768
+    "1,7,2,1"      # avg=4,  batch=2, accum=1, tokens=8×2×1×4×512=32,768
+    "1,15,1,1"     # avg=8,  batch=1, accum=1, tokens=8×1×1×8×512=32,768
 )
 
 # 评估分支列表
