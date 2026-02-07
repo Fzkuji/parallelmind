@@ -654,3 +654,282 @@ OUT_DIR: out/512-h8-r075-b1-7
 [2026-02-07 10:19:27]   OUT_DIR:          out/512-h8-r075-b1-7
 [2026-02-07 10:19:27] ========================================================================
 [2026-02-07 10:19:27] [CMD] torchrun --nproc_per_node 8 trainer/train_pretrain.py             --pe rope             --rope_2d_ratio 0.75             --hidden_size 512             --num_attention_heads 8             --num_hidden_layers 8             --epochs 1             --batch_size 2             --accumulation_steps 1             --batch_by_samples             --max_branches_per_sample 7             --min_branches_per_sample 1             --val_max_branches_per_sample 4             --val_min_branches_per_sample 4             --max_total_tokens 0             --data_path dataset/pretrain_512.jsonl             --max-samples 2048000             --val_samples 500000             --val_interval_tokens 100000000             --out_dir out/512-h8-r075-b1-7             --ddp
+[2026-02-07 12:56:26] [TRAINING] Completed: out/512-h8-r075-b1-7
+--- Evaluation Results ---
+EVAL_BRANCH=1:
+[2026-02-07 12:56:26] [EVAL] VAL_BRANCH=1, BATCH=4 (attempt 1)
+[2026-02-07 12:58:01] [EVAL] Recorded: rope=0.75, train=1-7, eval=1, loss=2.5108, ppl=12.31
+EVAL_BRANCH=2:
+[2026-02-07 12:58:01] [EVAL] VAL_BRANCH=2, BATCH=4 (attempt 1)
+[2026-02-07 12:59:03] [EVAL] Recorded: rope=0.75, train=1-7, eval=2, loss=2.4953, ppl=12.12
+EVAL_BRANCH=4:
+[2026-02-07 12:59:03] [EVAL] VAL_BRANCH=4, BATCH=4 (attempt 1)
+[2026-02-07 13:00:03] [EVAL] Recorded: rope=0.75, train=1-7, eval=4, loss=2.4971, ppl=12.15
+EVAL_BRANCH=8:
+[2026-02-07 13:00:03] [EVAL] VAL_BRANCH=8, BATCH=4 (attempt 1)
+[2026-02-07 13:01:03] [EVAL] Recorded: rope=0.75, train=1-7, eval=8, loss=2.5405, ppl=12.69
+EVAL_BRANCH=16:
+[2026-02-07 13:01:03] [EVAL] VAL_BRANCH=16, BATCH=2 (attempt 1)
+[2026-02-07 13:02:02] [EVAL] Recorded: rope=0.75, train=1-7, eval=16, loss=3.0241, ppl=20.58
+EVAL_BRANCH=24:
+[2026-02-07 13:02:02] [EVAL] VAL_BRANCH=24, BATCH=1 (attempt 1)
+[2026-02-07 13:03:01] [EVAL] Recorded: rope=0.75, train=1-7, eval=24, loss=3.4677, ppl=32.06
+EVAL_BRANCH=32:
+[2026-02-07 13:03:01] [EVAL] VAL_BRANCH=32, BATCH=1 (attempt 1)
+[2026-02-07 13:03:59] [EVAL] Recorded: rope=0.75, train=1-7, eval=32, loss=3.8966, ppl=49.23
+[2026-02-07 13:03:59] >>> 进度: 15/20 (75%) | 已用时: 37:38:53 | 预计剩余: 12:32:55 | ETA: 2026-02-08 01:36:54
+
+[2026-02-07 13:03:59] 
+[2026-02-07 13:03:59] >>> Experiment 16 / 20
+[2026-02-07 13:03:59] >>> ROPE=0.75, TRAIN_BRANCH=1-15
+
+--- EXPERIMENT 16 / 20 ---
+ROPE=0.75, TRAIN_BRANCH=1-15
+OUT_DIR: out/512-h8-r075-b1-15
+[2026-02-07 13:03:59] 
+[2026-02-07 13:03:59] ========================================================================
+[2026-02-07 13:03:59] [TRAINING] Attempt 1/3
+[2026-02-07 13:03:59]   ROPE_2D_RATIO:    0.75
+[2026-02-07 13:03:59]   TRAIN_BRANCH:     1-15
+[2026-02-07 13:03:59]   BATCH_SIZE:       1
+[2026-02-07 13:03:59]   ACCUM_STEPS:      1
+[2026-02-07 13:03:59]   OUT_DIR:          out/512-h8-r075-b1-15
+[2026-02-07 13:03:59] ========================================================================
+[2026-02-07 13:03:59] [CMD] torchrun --nproc_per_node 8 trainer/train_pretrain.py             --pe rope             --rope_2d_ratio 0.75             --hidden_size 512             --num_attention_heads 8             --num_hidden_layers 8             --epochs 1             --batch_size 1             --accumulation_steps 1             --batch_by_samples             --max_branches_per_sample 15             --min_branches_per_sample 1             --val_max_branches_per_sample 4             --val_min_branches_per_sample 4             --max_total_tokens 0             --data_path dataset/pretrain_512.jsonl             --max-samples 2048000             --val_samples 500000             --val_interval_tokens 100000000             --out_dir out/512-h8-r075-b1-15             --ddp
+[2026-02-07 14:54:41] [TRAINING] Completed: out/512-h8-r075-b1-15
+--- Evaluation Results ---
+EVAL_BRANCH=1:
+[2026-02-07 14:54:41] [EVAL] VAL_BRANCH=1, BATCH=4 (attempt 1)
+[2026-02-07 14:56:14] [EVAL] Recorded: rope=0.75, train=1-15, eval=1, loss=2.6223, ppl=13.77
+EVAL_BRANCH=2:
+[2026-02-07 14:56:14] [EVAL] VAL_BRANCH=2, BATCH=4 (attempt 1)
+[2026-02-07 14:57:16] [EVAL] Recorded: rope=0.75, train=1-15, eval=2, loss=2.6070, ppl=13.56
+EVAL_BRANCH=4:
+[2026-02-07 14:57:16] [EVAL] VAL_BRANCH=4, BATCH=4 (attempt 1)
+[2026-02-07 14:58:14] [EVAL] Recorded: rope=0.75, train=1-15, eval=4, loss=2.5998, ppl=13.46
+EVAL_BRANCH=8:
+[2026-02-07 14:58:14] [EVAL] VAL_BRANCH=8, BATCH=4 (attempt 1)
+[2026-02-07 14:59:11] [EVAL] Recorded: rope=0.75, train=1-15, eval=8, loss=2.6006, ppl=13.47
+EVAL_BRANCH=16:
+[2026-02-07 14:59:11] [EVAL] VAL_BRANCH=16, BATCH=2 (attempt 1)
+[2026-02-07 15:00:09] [EVAL] Recorded: rope=0.75, train=1-15, eval=16, loss=2.6497, ppl=14.15
+EVAL_BRANCH=24:
+[2026-02-07 15:00:09] [EVAL] VAL_BRANCH=24, BATCH=1 (attempt 1)
+[2026-02-07 15:01:09] [EVAL] Recorded: rope=0.75, train=1-15, eval=24, loss=2.7585, ppl=15.78
+EVAL_BRANCH=32:
+[2026-02-07 15:01:09] [EVAL] VAL_BRANCH=32, BATCH=1 (attempt 1)
+[2026-02-07 15:02:09] [EVAL] Recorded: rope=0.75, train=1-15, eval=32, loss=2.9389, ppl=18.90
+[2026-02-07 15:02:09] >>> 进度: 16/20 (80%) | 已用时: 39:37:03 | 预计剩余: 09:54:12 | ETA: 2026-02-08 00:56:21
+
+[2026-02-07 15:02:09] 
+[2026-02-07 15:02:09] ############################################################################
+[2026-02-07 15:02:09] # ROPE_2D_RATIO = 1.0
+[2026-02-07 15:02:09] ############################################################################
+
+========================================
+ROPE_2D_RATIO = 1.0
+========================================
+[2026-02-07 15:02:09] 
+[2026-02-07 15:02:09] >>> Experiment 17 / 20
+[2026-02-07 15:02:09] >>> ROPE=1.0, TRAIN_BRANCH=fixed1
+
+--- EXPERIMENT 17 / 20 ---
+ROPE=1.0, TRAIN_BRANCH=fixed1
+OUT_DIR: out/512-h8-r10-bfixed1
+[2026-02-07 15:02:09] 
+[2026-02-07 15:02:09] ========================================================================
+[2026-02-07 15:02:09] [TRAINING] Attempt 1/3
+[2026-02-07 15:02:09]   ROPE_2D_RATIO:    1.0
+[2026-02-07 15:02:09]   TRAIN_BRANCH:     1-1
+[2026-02-07 15:02:09]   BATCH_SIZE:       8
+[2026-02-07 15:02:09]   ACCUM_STEPS:      1
+[2026-02-07 15:02:09]   OUT_DIR:          out/512-h8-r10-bfixed1
+[2026-02-07 15:02:09] ========================================================================
+[2026-02-07 15:02:09] [CMD] torchrun --nproc_per_node 8 trainer/train_pretrain.py             --pe rope             --rope_2d_ratio 1.0             --hidden_size 512             --num_attention_heads 8             --num_hidden_layers 8             --epochs 1             --batch_size 8             --accumulation_steps 1             --batch_by_samples             --max_branches_per_sample 1             --min_branches_per_sample 1             --val_max_branches_per_sample 4             --val_min_branches_per_sample 4             --max_total_tokens 0             --data_path dataset/pretrain_512.jsonl             --max-samples 2048000             --val_samples 500000             --val_interval_tokens 100000000             --out_dir out/512-h8-r10-bfixed1             --ddp
+[2026-02-07 17:26:46] [TRAINING] Completed: out/512-h8-r10-bfixed1
+--- Evaluation Results ---
+EVAL_BRANCH=1:
+[2026-02-07 17:26:46] [EVAL] VAL_BRANCH=1, BATCH=4 (attempt 1)
+[2026-02-07 17:28:18] [EVAL] Recorded: rope=1.0, train=fixed1, eval=1, loss=2.4609, ppl=11.72
+EVAL_BRANCH=2:
+[2026-02-07 17:28:18] [EVAL] VAL_BRANCH=2, BATCH=4 (attempt 1)
+[2026-02-07 17:29:23] [EVAL] Recorded: rope=1.0, train=fixed1, eval=2, loss=3.7923, ppl=44.36
+EVAL_BRANCH=4:
+[2026-02-07 17:29:23] [EVAL] VAL_BRANCH=4, BATCH=4 (attempt 1)
+[2026-02-07 17:30:22] [EVAL] Recorded: rope=1.0, train=fixed1, eval=4, loss=4.5955, ppl=99.03
+EVAL_BRANCH=8:
+[2026-02-07 17:30:22] [EVAL] VAL_BRANCH=8, BATCH=4 (attempt 1)
+[2026-02-07 17:31:20] [EVAL] Recorded: rope=1.0, train=fixed1, eval=8, loss=5.1308, ppl=169.16
+EVAL_BRANCH=16:
+[2026-02-07 17:31:20] [EVAL] VAL_BRANCH=16, BATCH=2 (attempt 1)
+[2026-02-07 17:32:19] [EVAL] Recorded: rope=1.0, train=fixed1, eval=16, loss=5.5021, ppl=245.21
+EVAL_BRANCH=24:
+[2026-02-07 17:32:19] [EVAL] VAL_BRANCH=24, BATCH=1 (attempt 1)
+[2026-02-07 17:33:19] [EVAL] Recorded: rope=1.0, train=fixed1, eval=24, loss=5.6867, ppl=294.91
+EVAL_BRANCH=32:
+[2026-02-07 17:33:19] [EVAL] VAL_BRANCH=32, BATCH=1 (attempt 1)
+[2026-02-07 17:34:18] [EVAL] Recorded: rope=1.0, train=fixed1, eval=32, loss=5.8063, ppl=332.39
+[2026-02-07 17:34:18] >>> 进度: 17/20 (85%) | 已用时: 42:09:12 | 预计剩余: 07:26:18 | ETA: 2026-02-08 01:00:36
+
+[2026-02-07 17:34:18] 
+[2026-02-07 17:34:18] >>> Experiment 18 / 20
+[2026-02-07 17:34:18] >>> ROPE=1.0, TRAIN_BRANCH=1-3
+
+--- EXPERIMENT 18 / 20 ---
+ROPE=1.0, TRAIN_BRANCH=1-3
+OUT_DIR: out/512-h8-r10-b1-3
+[2026-02-07 17:34:18] 
+[2026-02-07 17:34:18] ========================================================================
+[2026-02-07 17:34:18] [TRAINING] Attempt 1/3
+[2026-02-07 17:34:18]   ROPE_2D_RATIO:    1.0
+[2026-02-07 17:34:18]   TRAIN_BRANCH:     1-3
+[2026-02-07 17:34:18]   BATCH_SIZE:       4
+[2026-02-07 17:34:18]   ACCUM_STEPS:      1
+[2026-02-07 17:34:18]   OUT_DIR:          out/512-h8-r10-b1-3
+[2026-02-07 17:34:18] ========================================================================
+[2026-02-07 17:34:18] [CMD] torchrun --nproc_per_node 8 trainer/train_pretrain.py             --pe rope             --rope_2d_ratio 1.0             --hidden_size 512             --num_attention_heads 8             --num_hidden_layers 8             --epochs 1             --batch_size 4             --accumulation_steps 1             --batch_by_samples             --max_branches_per_sample 3             --min_branches_per_sample 1             --val_max_branches_per_sample 4             --val_min_branches_per_sample 4             --max_total_tokens 0             --data_path dataset/pretrain_512.jsonl             --max-samples 2048000             --val_samples 500000             --val_interval_tokens 100000000             --out_dir out/512-h8-r10-b1-3             --ddp
+[2026-02-07 20:04:45] [TRAINING] Completed: out/512-h8-r10-b1-3
+--- Evaluation Results ---
+EVAL_BRANCH=1:
+[2026-02-07 20:04:45] [EVAL] VAL_BRANCH=1, BATCH=4 (attempt 1)
+[2026-02-07 20:06:19] [EVAL] Recorded: rope=1.0, train=1-3, eval=1, loss=2.4799, ppl=11.94
+EVAL_BRANCH=2:
+[2026-02-07 20:06:19] [EVAL] VAL_BRANCH=2, BATCH=4 (attempt 1)
+[2026-02-07 20:07:23] [EVAL] Recorded: rope=1.0, train=1-3, eval=2, loss=2.4695, ppl=11.82
+EVAL_BRANCH=4:
+[2026-02-07 20:07:23] [EVAL] VAL_BRANCH=4, BATCH=4 (attempt 1)
+[2026-02-07 20:08:24] [EVAL] Recorded: rope=1.0, train=1-3, eval=4, loss=2.5423, ppl=12.71
+EVAL_BRANCH=8:
+[2026-02-07 20:08:24] [EVAL] VAL_BRANCH=8, BATCH=4 (attempt 1)
+[2026-02-07 20:09:24] [EVAL] Recorded: rope=1.0, train=1-3, eval=8, loss=2.6774, ppl=14.55
+EVAL_BRANCH=16:
+[2026-02-07 20:09:24] [EVAL] VAL_BRANCH=16, BATCH=2 (attempt 1)
+[2026-02-07 20:10:22] [EVAL] Recorded: rope=1.0, train=1-3, eval=16, loss=3.2281, ppl=25.23
+EVAL_BRANCH=24:
+[2026-02-07 20:10:22] [EVAL] VAL_BRANCH=24, BATCH=1 (attempt 1)
+[2026-02-07 20:11:21] [EVAL] Recorded: rope=1.0, train=1-3, eval=24, loss=3.7215, ppl=41.33
+EVAL_BRANCH=32:
+[2026-02-07 20:11:21] [EVAL] VAL_BRANCH=32, BATCH=1 (attempt 1)
+[2026-02-07 20:12:19] [EVAL] Recorded: rope=1.0, train=1-3, eval=32, loss=4.0977, ppl=60.20
+[2026-02-07 20:12:19] >>> 进度: 18/20 (90%) | 已用时: 44:47:13 | 预计剩余: 04:58:34 | ETA: 2026-02-08 01:10:53
+
+[2026-02-07 20:12:19] 
+[2026-02-07 20:12:19] >>> Experiment 19 / 20
+[2026-02-07 20:12:19] >>> ROPE=1.0, TRAIN_BRANCH=1-7
+
+--- EXPERIMENT 19 / 20 ---
+ROPE=1.0, TRAIN_BRANCH=1-7
+OUT_DIR: out/512-h8-r10-b1-7
+[2026-02-07 20:12:19] 
+[2026-02-07 20:12:19] ========================================================================
+[2026-02-07 20:12:19] [TRAINING] Attempt 1/3
+[2026-02-07 20:12:19]   ROPE_2D_RATIO:    1.0
+[2026-02-07 20:12:19]   TRAIN_BRANCH:     1-7
+[2026-02-07 20:12:19]   BATCH_SIZE:       2
+[2026-02-07 20:12:19]   ACCUM_STEPS:      1
+[2026-02-07 20:12:19]   OUT_DIR:          out/512-h8-r10-b1-7
+[2026-02-07 20:12:19] ========================================================================
+[2026-02-07 20:12:19] [CMD] torchrun --nproc_per_node 8 trainer/train_pretrain.py             --pe rope             --rope_2d_ratio 1.0             --hidden_size 512             --num_attention_heads 8             --num_hidden_layers 8             --epochs 1             --batch_size 2             --accumulation_steps 1             --batch_by_samples             --max_branches_per_sample 7             --min_branches_per_sample 1             --val_max_branches_per_sample 4             --val_min_branches_per_sample 4             --max_total_tokens 0             --data_path dataset/pretrain_512.jsonl             --max-samples 2048000             --val_samples 500000             --val_interval_tokens 100000000             --out_dir out/512-h8-r10-b1-7             --ddp
+[2026-02-07 22:48:54] [TRAINING] Completed: out/512-h8-r10-b1-7
+--- Evaluation Results ---
+EVAL_BRANCH=1:
+[2026-02-07 22:48:54] [EVAL] VAL_BRANCH=1, BATCH=4 (attempt 1)
+[2026-02-07 22:50:27] [EVAL] Recorded: rope=1.0, train=1-7, eval=1, loss=2.5092, ppl=12.29
+EVAL_BRANCH=2:
+[2026-02-07 22:50:27] [EVAL] VAL_BRANCH=2, BATCH=4 (attempt 1)
+[2026-02-07 22:51:29] [EVAL] Recorded: rope=1.0, train=1-7, eval=2, loss=2.5035, ppl=12.23
+EVAL_BRANCH=4:
+[2026-02-07 22:51:29] [EVAL] VAL_BRANCH=4, BATCH=4 (attempt 1)
+[2026-02-07 22:52:30] [EVAL] Recorded: rope=1.0, train=1-7, eval=4, loss=2.4977, ppl=12.15
+EVAL_BRANCH=8:
+[2026-02-07 22:52:30] [EVAL] VAL_BRANCH=8, BATCH=4 (attempt 1)
+[2026-02-07 22:53:28] [EVAL] Recorded: rope=1.0, train=1-7, eval=8, loss=2.4992, ppl=12.17
+EVAL_BRANCH=16:
+[2026-02-07 22:53:28] [EVAL] VAL_BRANCH=16, BATCH=2 (attempt 1)
+[2026-02-07 22:54:28] [EVAL] Recorded: rope=1.0, train=1-7, eval=16, loss=2.5389, ppl=12.67
+EVAL_BRANCH=24:
+[2026-02-07 22:54:28] [EVAL] VAL_BRANCH=24, BATCH=1 (attempt 1)
+[2026-02-07 22:55:27] [EVAL] Recorded: rope=1.0, train=1-7, eval=24, loss=2.6115, ppl=13.62
+EVAL_BRANCH=32:
+[2026-02-07 22:55:27] [EVAL] VAL_BRANCH=32, BATCH=1 (attempt 1)
+[2026-02-07 22:56:26] [EVAL] Recorded: rope=1.0, train=1-7, eval=32, loss=2.7805, ppl=16.13
+[2026-02-07 22:56:26] >>> 进度: 19/20 (95%) | 已用时: 47:31:20 | 预计剩余: 02:30:04 | ETA: 2026-02-08 01:26:30
+
+[2026-02-07 22:56:26] 
+[2026-02-07 22:56:26] >>> Experiment 20 / 20
+[2026-02-07 22:56:26] >>> ROPE=1.0, TRAIN_BRANCH=1-15
+
+--- EXPERIMENT 20 / 20 ---
+ROPE=1.0, TRAIN_BRANCH=1-15
+OUT_DIR: out/512-h8-r10-b1-15
+[2026-02-07 22:56:26] 
+[2026-02-07 22:56:26] ========================================================================
+[2026-02-07 22:56:26] [TRAINING] Attempt 1/3
+[2026-02-07 22:56:26]   ROPE_2D_RATIO:    1.0
+[2026-02-07 22:56:26]   TRAIN_BRANCH:     1-15
+[2026-02-07 22:56:26]   BATCH_SIZE:       1
+[2026-02-07 22:56:26]   ACCUM_STEPS:      1
+[2026-02-07 22:56:26]   OUT_DIR:          out/512-h8-r10-b1-15
+[2026-02-07 22:56:26] ========================================================================
+[2026-02-07 22:56:26] [CMD] torchrun --nproc_per_node 8 trainer/train_pretrain.py             --pe rope             --rope_2d_ratio 1.0             --hidden_size 512             --num_attention_heads 8             --num_hidden_layers 8             --epochs 1             --batch_size 1             --accumulation_steps 1             --batch_by_samples             --max_branches_per_sample 15             --min_branches_per_sample 1             --val_max_branches_per_sample 4             --val_min_branches_per_sample 4             --max_total_tokens 0             --data_path dataset/pretrain_512.jsonl             --max-samples 2048000             --val_samples 500000             --val_interval_tokens 100000000             --out_dir out/512-h8-r10-b1-15             --ddp
+[2026-02-08 00:46:09] [TRAINING] Completed: out/512-h8-r10-b1-15
+--- Evaluation Results ---
+EVAL_BRANCH=1:
+[2026-02-08 00:46:09] [EVAL] VAL_BRANCH=1, BATCH=4 (attempt 1)
+[2026-02-08 00:47:43] [EVAL] Recorded: rope=1.0, train=1-15, eval=1, loss=2.5997, ppl=13.46
+EVAL_BRANCH=2:
+[2026-02-08 00:47:43] [EVAL] VAL_BRANCH=2, BATCH=4 (attempt 1)
+[2026-02-08 00:48:45] [EVAL] Recorded: rope=1.0, train=1-15, eval=2, loss=2.5815, ppl=13.22
+EVAL_BRANCH=4:
+[2026-02-08 00:48:45] [EVAL] VAL_BRANCH=4, BATCH=4 (attempt 1)
+[2026-02-08 00:49:45] [EVAL] Recorded: rope=1.0, train=1-15, eval=4, loss=2.5851, ppl=13.26
+EVAL_BRANCH=8:
+[2026-02-08 00:49:45] [EVAL] VAL_BRANCH=8, BATCH=4 (attempt 1)
+[2026-02-08 00:50:43] [EVAL] Recorded: rope=1.0, train=1-15, eval=8, loss=2.5806, ppl=13.20
+EVAL_BRANCH=16:
+[2026-02-08 00:50:43] [EVAL] VAL_BRANCH=16, BATCH=2 (attempt 1)
+[2026-02-08 00:51:41] [EVAL] Recorded: rope=1.0, train=1-15, eval=16, loss=2.5887, ppl=13.31
+EVAL_BRANCH=24:
+[2026-02-08 00:51:41] [EVAL] VAL_BRANCH=24, BATCH=1 (attempt 1)
+[2026-02-08 00:52:40] [EVAL] Recorded: rope=1.0, train=1-15, eval=24, loss=2.6096, ppl=13.59
+EVAL_BRANCH=32:
+[2026-02-08 00:52:40] [EVAL] VAL_BRANCH=32, BATCH=1 (attempt 1)
+[2026-02-08 00:53:39] [EVAL] Recorded: rope=1.0, train=1-15, eval=32, loss=2.6340, ppl=13.93
+[2026-02-08 00:53:39] >>> 进度: 20/20 (100%) | 已用时: 49:28:33 | 预计剩余: 00:00:00 | ETA: 2026-02-08 00:53:39
+
+[2026-02-08 00:53:39] 
+[2026-02-08 00:53:39] ============================================================================
+[2026-02-08 00:53:39] Experiments finished at Sun Feb  8 00:53:39 CST 2026
+[2026-02-08 00:53:39] 
+[2026-02-08 00:53:39] Statistics:
+[2026-02-08 00:53:39]   Total:     20
+[2026-02-08 00:53:39]   Completed: 20
+[2026-02-08 00:53:39]   Failed:    0
+[2026-02-08 00:53:39] 
+[2026-02-08 00:53:39] Log directory: experiments/logs/ablation
+[2026-02-08 00:53:39] ============================================================================
+
+# ========================================
+# Session completed at Sun Feb  8 00:53:39 CST 2026
+# Total: 20, Completed: 20, Failed: 0
+# ========================================
+
+==========================================
+Experiments finished!
+
+Statistics:
+  Total:     20
+  Completed: 20
+  Failed:    0
+
+Log directory: experiments/logs/ablation
+  - train.log:        完整训练日志
+  - loss_records.txt: Loss 记录（原始输出）
+  - results.csv:      结构化结果汇总（用于绘图）
+  - errors.txt:       错误记录
+  - completed.txt:    已完成的评估记录
+
+To rerun failed experiments, just run this script again.
+To force rerun all, use: ./run_ablation.sh --force
+==========================================
+(mind) [zichuanfu@ip-10-206-0-17 parallelmind]$ 
