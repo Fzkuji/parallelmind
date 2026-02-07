@@ -321,7 +321,14 @@ run_evaluation() {
 
     # 检查是否已完成
     if [ "$FORCE_RERUN" = false ] && is_eval_completed "$EXP_KEY"; then
-        log "[SKIP] Evaluation already completed: $EXP_KEY"
+        local PREV_RESULT=$(grep "^${ROPE_RATIO},${BRANCH_STR},${VAL_BRANCH}," "$CSV_FILE" 2>/dev/null | tail -1)
+        if [ -n "$PREV_RESULT" ]; then
+            local PREV_LOSS=$(echo "$PREV_RESULT" | cut -d',' -f4)
+            local PREV_PPL=$(echo "$PREV_RESULT" | cut -d',' -f5)
+            log "[SKIP] Already done: rope=$ROPE_RATIO, train=$BRANCH_STR, eval=$VAL_BRANCH, loss=$PREV_LOSS, ppl=$PREV_PPL"
+        else
+            log "[SKIP] Evaluation already completed: $EXP_KEY"
+        fi
         return 0
     fi
 
