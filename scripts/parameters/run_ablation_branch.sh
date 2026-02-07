@@ -240,7 +240,7 @@ run_training() {
         log "  OUT_DIR:          $OUT_DIR"
         log "========================================================================"
 
-        TRAIN_CMD="torchrun --nproc_per_node $NUM_GPUS src/training/train_pretrain.py \
+        TRAIN_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS src/training/train_pretrain.py \
             --pe rope \
             --rope_2d_ratio $ROPE_RATIO \
             --hidden_size $HIDDEN_SIZE \
@@ -336,7 +336,7 @@ run_evaluation() {
     while [ $RETRY -lt $MAX_RETRIES ]; do
         log "[EVAL] VAL_BRANCH=$VAL_BRANCH, BATCH=$EVAL_BATCH (attempt $((RETRY + 1)))"
 
-        EVAL_CMD="python src/inference/eval_loss.py \
+        EVAL_CMD="PYTHONPATH=. python src/inference/eval_loss.py \
             --model_path $MODEL_PATH \
             --data_path dataset/pretrain_hq_split.jsonl \
             --hidden_size $HIDDEN_SIZE \
