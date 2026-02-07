@@ -336,7 +336,7 @@ run_evaluation() {
     while [ $RETRY -lt $MAX_RETRIES ]; do
         log "[EVAL] VAL_BRANCH=$VAL_BRANCH, BATCH=$EVAL_BATCH (attempt $((RETRY + 1)))"
 
-        EVAL_CMD="PYTHONPATH=. python src/inference/eval_loss.py \
+        EVAL_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS src/inference/eval_loss.py \
             --model_path $MODEL_PATH \
             --data_path dataset/pretrain_hq_split.jsonl \
             --hidden_size $HIDDEN_SIZE \
