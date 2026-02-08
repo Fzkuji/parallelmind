@@ -87,7 +87,7 @@ def load_model_and_tokenizer(args):
         tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
 
     # build config
-    lm_config = MiniMindConfig(
+    config_kwargs = dict(
         hidden_size=args.hidden_size,
         num_attention_heads=args.num_attention_heads,
         num_hidden_layers=args.num_hidden_layers,
@@ -98,6 +98,9 @@ def load_model_and_tokenizer(args):
         fpe_max_positions=args.fpe_max_positions,
         fpe_learnable=args.fpe_learnable,
     )
+    if args.num_key_value_heads is not None:
+        config_kwargs['num_key_value_heads'] = args.num_key_value_heads
+    lm_config = MiniMindConfig(**config_kwargs)
 
     # adjust vocab size from tokenizer or checkpoint
     lm_config.vocab_size = len(tokenizer)
@@ -292,6 +295,8 @@ def main():
     parser.add_argument('--hidden_size', type=int, default=512)
     parser.add_argument('--num_attention_heads', type=int, default=8)
     parser.add_argument('--num_hidden_layers', type=int, default=8)
+    parser.add_argument('--num_key_value_heads', type=int, default=None,
+                        help='Number of key-value heads for GQA. Default: use MiniMindConfig default')
     parser.add_argument('--use_moe', type=bool, default=False)
 
     # position encoding

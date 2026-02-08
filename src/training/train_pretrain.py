@@ -535,6 +535,8 @@ if __name__ == "__main__":
     parser.add_argument('--hidden_size', default=512, type=int)
     parser.add_argument('--num_attention_heads', default=8, type=int)
     parser.add_argument('--num_hidden_layers', default=8, type=int)
+    parser.add_argument('--num_key_value_heads', default=None, type=int,
+                        help='Number of key-value heads for GQA. Default: use MiniMindConfig default')
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--branches_per_sample', type=int, default=8)
     parser.add_argument('--max_branches_per_sample', type=int, default=None, help='Maximum branches per sample for dynamic mode (1-32). If set, enables dynamic branches.')
@@ -636,7 +638,7 @@ if __name__ == "__main__":
     else:
         effective_batch_size = args.batch_size * branches_multiplier
 
-    lm_config = MiniMindConfig(
+    config_kwargs = dict(
         hidden_size=args.hidden_size,
         num_attention_heads=args.num_attention_heads,
         num_hidden_layers=args.num_hidden_layers,
@@ -647,6 +649,9 @@ if __name__ == "__main__":
         fpe_max_positions=args.fpe_max_positions,
         fpe_learnable=args.fpe_learnable,
     )
+    if args.num_key_value_heads is not None:
+        config_kwargs['num_key_value_heads'] = args.num_key_value_heads
+    lm_config = MiniMindConfig(**config_kwargs)
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)
     if not os.path.isabs(args.out_dir):
