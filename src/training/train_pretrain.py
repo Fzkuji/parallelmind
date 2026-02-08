@@ -21,7 +21,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler, Subset
 import random
 from contextlib import nullcontext
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from src.model.columnar import build_columnar_causal_mask
 from src.data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
 from src.data.parallel_collator import ParallelPretrainCollator
@@ -431,15 +431,22 @@ def train_epoch(epoch, wandb):
             model.train()
 
 
+def _load_tokenizer(path):
+    """Load tokenizer with fallback: AutoTokenizer -> PreTrainedTokenizerFast."""
+    try:
+        return AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+    except (ValueError, OSError):
+        return PreTrainedTokenizerFast.from_pretrained(path)
+
+
 def init_model(lm_config):
     # 加载 tokenizer：优先使用命令行指定的，否则使用默认的 minimind tokenizer
     if hasattr(args, 'tokenizer') and args.tokenizer:
         tokenizer_path = args.tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     else:
         # 默认使用 minimind tokenizer
         tokenizer_path = os.path.join(root_path, 'model')
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    tokenizer = _load_tokenizer(tokenizer_path)
 
     # 存储 tokenizer 路径，用于保存到 checkpoint
     lm_config.tokenizer_path = tokenizer_path

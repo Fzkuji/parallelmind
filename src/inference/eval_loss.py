@@ -12,7 +12,7 @@ root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if root_path not in sys.path:
     sys.path.insert(0, root_path)
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerFast
 from src.model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 from src.data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
 from src.data.parallel_collator import ParallelPretrainCollator
@@ -80,11 +80,12 @@ def load_model_and_tokenizer(args):
         tokenizer_path = args.tokenizer
         vocab_size = None
 
-    # tokenizer loading
-    if tokenizer_path:
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(os.path.join(root_path, 'model'))
+    # tokenizer loading (with fallback for directories without model config.json)
+    tok_path = tokenizer_path or os.path.join(root_path, 'model')
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(tok_path, trust_remote_code=True)
+    except (ValueError, OSError):
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(tok_path)
 
     # build config
     config_kwargs = dict(
