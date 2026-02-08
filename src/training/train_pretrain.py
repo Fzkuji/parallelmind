@@ -439,7 +439,7 @@ def init_model(lm_config):
     else:
         # 默认使用 minimind tokenizer
         tokenizer_path = os.path.join(root_path, 'model')
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
     # 存储 tokenizer 路径，用于保存到 checkpoint
     lm_config.tokenizer_path = tokenizer_path
