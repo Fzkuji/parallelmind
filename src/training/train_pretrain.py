@@ -21,6 +21,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler, Subset
 import random
 from contextlib import nullcontext
+from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from src.model.columnar import build_columnar_causal_mask
 from src.data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
@@ -195,7 +196,11 @@ def train_epoch(epoch, wandb):
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
 
-    for step, batch in enumerate(train_loader):
+    is_rank0 = (not ddp) or dist.get_rank() == 0
+    pbar = tqdm(enumerate(train_loader), total=iter_per_epoch,
+                desc=f"Epoch {epoch+1}/{args.epochs}",
+                disable=not is_rank0, dynamic_ncols=True)
+    for step, batch in pbar:
         # 在第一个epoch的第一个step，打印batch示例
         if epoch == 0 and step == 0:
             print_first_batch_sample(batch, tokenizer)
@@ -276,8 +281,15 @@ def train_epoch(epoch, wandb):
 
             optimizer.zero_grad(set_to_none=True)
 
-            # 仅在优化步边界按优化步频率打印日志
+            # 更新进度条
             opt_step = (step + 1) // args.accumulation_steps
+            if is_rank0:
+                cur_loss = opt_loss_accum / max(1, opt_micro_count)
+                pbar.set_postfix(loss=f"{cur_loss:.3f}",
+                                 lr=f"{optimizer.param_groups[-1]['lr']:.2e}",
+                                 tokens=f"{trained_tokens:,}")
+
+            # 仅在优化步边界按优化步频率打印日志
             if opt_step % max(1, args.log_interval) == 0:
                 spend_time = time.time() - start_time
                 # 计算实际的 batch 信息（当前微步）
