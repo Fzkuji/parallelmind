@@ -66,8 +66,8 @@ NUM_KV_HEADS=2
 
 # Data settings
 DATA_PATH="dataset/pretrain_512.jsonl"
-MAX_SAMPLES=2048000
-VAL_SAMPLES=500000
+MAX_SAMPLES=1024000
+VAL_SAMPLES=200000
 VAL_INTERVAL_TOKENS=100000000
 
 # 日志目录（固定名称，便于续训）
@@ -264,16 +264,15 @@ run_training() {
 
         log "[CMD] $TRAIN_CMD"
 
-        # 运行训练，捕获输出，记录 PID 以便中断时清理
-        eval "$TRAIN_CMD" > /tmp/train_output_$$.txt 2>&1 &
-        CHILD_PID=$!
-        wait $CHILD_PID
+        # 运行训练，tee 同时输出到终端和日志文件
+        set -o pipefail
+        eval "$TRAIN_CMD" 2>&1 | tee /tmp/train_output_$$.txt
         TRAIN_EXIT=$?
-        CHILD_PID=""
-        TRAIN_OUTPUT=$(cat /tmp/train_output_$$.txt)
+        set +o pipefail
+        TRAIN_OUTPUT=$(cat /tmp/train_output_$$.txt 2>/dev/null)
         rm -f /tmp/train_output_$$.txt
 
-        echo "$TRAIN_OUTPUT" >> "$LOG_FILE"
+        cat <<< "$TRAIN_OUTPUT" >> "$LOG_FILE"
 
         if [ $TRAIN_EXIT -eq 0 ]; then
             log "[TRAINING] Completed: $OUT_DIR"
