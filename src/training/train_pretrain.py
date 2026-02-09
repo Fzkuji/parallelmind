@@ -422,25 +422,36 @@ def train_epoch(epoch, wandb):
                 validate(val_loader, epoch, global_step)
 
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
-            model.eval()
-            moe_path = '_moe' if lm_config.use_moe else ''
-            ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}.pth'
+            _save_checkpoint(model, lm_config, args, final=False)
 
-            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-                state_dict = model.module.state_dict()
-            else:
-                state_dict = model.state_dict()
 
-            state_dict = {k: v.half() for k, v in state_dict.items()}  # 半精度保存
+def _save_checkpoint(model, lm_config, args, final=False):
+    """Save model checkpoint. final=True saves as the definitive model file."""
+    model.eval()
+    moe_path = '_moe' if lm_config.use_moe else ''
+    if final:
+        ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}.pth'
+    else:
+        ckp = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}_ckpt.pth'
 
-            # 保存 checkpoint，包含模型权重和 tokenizer 信息
-            checkpoint = {
-                'model_state_dict': state_dict,
-                'tokenizer_path': lm_config.tokenizer_path,
-                'vocab_size': lm_config.vocab_size,
-            }
-            torch.save(checkpoint, ckp)
-            model.train()
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        state_dict = model.module.state_dict()
+    else:
+        state_dict = model.state_dict()
+
+    state_dict = {k: v.half() for k, v in state_dict.items()}
+    checkpoint = {
+        'model_state_dict': state_dict,
+        'tokenizer_path': lm_config.tokenizer_path,
+        'vocab_size': lm_config.vocab_size,
+    }
+    torch.save(checkpoint, ckp)
+    model.train()
+    if final:
+        # 训练完成后删除中间 checkpoint
+        ckpt_path = f'{args.save_dir}/pretrain_{lm_config.hidden_size}{moe_path}_ckpt.pth'
+        if os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
 
 
 def _load_tokenizer(path):
@@ -918,6 +929,11 @@ if __name__ == "__main__":
 
         for epoch in range(args.epochs):
             train_epoch(epoch, wandb)
+
+        # 训练完成，保存最终模型 (只有 rank 0)
+        if not ddp or dist.get_rank() == 0:
+            _save_checkpoint(model, lm_config, args, final=True)
+            Logger("Training complete. Final model saved.")
 
         if args.branch_slice_count is not None and slice_idx is not None:
             Logger(f"=== 完成 branch slice {slice_desc} ===")
