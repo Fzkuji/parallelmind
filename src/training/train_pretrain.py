@@ -341,9 +341,7 @@ def train_epoch(epoch, wandb):
                     trained_tokens,
                     remaining_min)
 
-                Logger(log_msg)
-
-                # 写入训练 JSONL 日志（仅rank0）
+                # 不再打印到控制台（tqdm 进度条已覆盖），仅写文件日志
                 if ((not ddp) or dist.get_rank() == 0) and getattr(args, 'train_log_path', None):
                     try:
                         world = dist.get_world_size() if ddp else 1
