@@ -212,8 +212,7 @@ class Attention(nn.Module):
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
-        # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+        # 使用 PyTorch SDPA (自动选择最优 backend: FlashAttention / memory-efficient / math)
 
     def forward(self,
                 x: torch.Tensor,
@@ -244,38 +243,21 @@ class Attention(nn.Module):
             repeat_kv(xv, self.n_rep).transpose(1, 2)
         )
 
-        if self.flash and seq_len > 1 and (attention_mask is None or torch.all(attention_mask == 1)):
-            attn_mask = (
-                None
-                if attention_mask is None
-                else attention_mask.view(bsz, 1, 1, -1).expand(bsz, self.n_local_heads, seq_len, -1).bool()
-            )
-
-            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+        if attention_mask is not None:
+            if attention_mask.dim() == 4:
+                # 4D additive mask (columnar causal mask): [batch, 1, seq, seq]
+                attn_mask = attention_mask.to(xq.dtype)
+            else:
+                # 2D padding mask [batch, seq] -> 4D additive mask
+                attn_mask = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2).to(xq.dtype)) * torch.finfo(xq.dtype).min
+            output = F.scaled_dot_product_attention(
+                xq, xk, xv, attn_mask=attn_mask,
+                dropout_p=self.dropout if self.training else 0.0, is_causal=False)
         else:
-            scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
-
-            # 只在没有KV cache时添加自动causal mask
-            # 当使用KV cache时, seq_len可能与kv_len不同, 需要自定义mask
-            kv_len = xk.size(2)  # xk shape: [batch, heads, kv_len, head_dim]
-            if past_key_value is None and seq_len == kv_len:
-                # 没有KV cache, 添加标准causal mask
-                scores = scores + torch.triu(
-                    torch.full((seq_len, seq_len), float("-inf"), device=scores.device),
-                    diagonal=1
-                ).unsqueeze(0).unsqueeze(0)
-
-            if attention_mask is not None:
-                if attention_mask.dim() == scores.dim():
-                    scores = scores + attention_mask
-                else:
-                    extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-                    extended_attention_mask = (1.0 - extended_attention_mask) * -1e9
-                    scores = scores + extended_attention_mask
-
-            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-            scores = self.attn_dropout(scores)
-            output = scores @ xv
+            output = F.scaled_dot_product_attention(
+                xq, xk, xv, attn_mask=None,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=(past_key_value is None and seq_len > 1))
 
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
         output = self.resid_dropout(self.o_proj(output))
