@@ -71,7 +71,7 @@ NUM_KV_HEADS=4
 DATA_PATH="dataset/pretrain_512.jsonl"
 MAX_SAMPLES=1024000
 VAL_SAMPLES=200000
-VAL_INTERVAL_TOKENS=25000000
+VAL_INTERVAL_TOKENS=0  # 不做中间验证，只看最终评估结果
 
 # 日志目录（独立于 512 实验）
 LOG_DIR="scripts/logs/ablation_1024"
