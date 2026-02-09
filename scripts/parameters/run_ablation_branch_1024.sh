@@ -333,10 +333,13 @@ run_evaluation() {
         return 0
     fi
 
-    # 根据分支数设置初始 batch size (更保守，因为 270M 模型)
-    local EVAL_BATCH=2
-    if [ "$VAL_BRANCH" -ge 16 ]; then
-        EVAL_BATCH=1
+    # 根据分支数设置初始 batch size (SDPA 大幅降低显存占用)
+    local EVAL_BATCH=16
+    if [ "$VAL_BRANCH" -ge 8 ]; then
+        EVAL_BATCH=8
+    fi
+    if [ "$VAL_BRANCH" -ge 32 ]; then
+        EVAL_BATCH=4
     fi
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
