@@ -108,6 +108,7 @@ from typing import Optional, Tuple, List, Union
 from transformers import PreTrainedModel, GenerationMixin, PretrainedConfig
 
 from src.model.columnar import (
+    Interleaved2DRoPE,
     patch_model_with_interleaved_2d_rope,
     set_rope_pos2d,
 )
@@ -439,10 +440,13 @@ class MiniMindModel(nn.Module):
         if config.pe_type == 'rope':
             # 原有方式：RoPE 2D（branch + time都在RoPE中编码）
             pair_indices = self._auto_pair_indices(config.rope_2d_ratio)
-            patch_model_with_interleaved_2d_rope(self, pair_indices)
+            if pair_indices:
+                patch_model_with_interleaved_2d_rope(self, pair_indices)
+                print(f"✓ 使用 RoPE 2D 位置编码 (branch + time in RoPE)")
+                print(f"  - Branch 维度比例: {config.rope_2d_ratio:.1%} ({len(pair_indices)}/{rope_dim//2} 频率对)")
+            else:
+                print(f"✓ 使用标准 1D RoPE 位置编码 (rope_2d_ratio=0, 无 branch 编码)")
             self.fourier_pe = None
-            print(f"✓ 使用 RoPE 2D 位置编码 (branch + time in RoPE)")
-            print(f"  - Branch 维度比例: {config.rope_2d_ratio:.1%} ({len(pair_indices)}/{rope_dim//2} 频率对)")
         elif config.pe_type == 'fpe':
             # 新方式：Fourier PE (branch) + 1D RoPE (time only)
             self.fourier_pe = FourierPositionEncoding(
@@ -461,8 +465,10 @@ class MiniMindModel(nn.Module):
 
     def _auto_pair_indices(self, ratio: float) -> Tuple[int, ...]:
         freq_count = int(self.rotary_emb.inv_freq.numel())
-        pair_count = max(1, min(freq_count, int(round(freq_count * ratio))))
-        start = max(1, freq_count - pair_count + 1)
+        pair_count = min(freq_count, int(round(freq_count * ratio)))
+        if pair_count == 0:
+            return ()
+        start = freq_count - pair_count + 1
         return tuple(range(start, freq_count + 1))
 
     def forward(
@@ -490,8 +496,10 @@ class MiniMindModel(nn.Module):
 
         # 根据pe_type选择位置编码方式
         if self.config.pe_type == 'rope':
-            # 原有方式：RoPE 2D
-            set_rope_pos2d(self, pos2d)
+            if isinstance(self.rotary_emb, Interleaved2DRoPE):
+                # RoPE 2D：branch + time 交织编码
+                set_rope_pos2d(self, pos2d)
+            # 标准 1D RoPE (rope_2d_ratio=0) 时 rotary_emb 未被 patch，直接用 position_ids
             cos, sin = self.rotary_emb(hidden_states, position_ids)
             position_embeddings = (cos, sin)
         elif self.config.pe_type == 'fpe':
