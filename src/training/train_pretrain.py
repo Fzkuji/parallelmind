@@ -23,12 +23,40 @@ import random
 from contextlib import nullcontext
 from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
-from src.model.columnar import build_columnar_causal_mask
+from src.model.columnar import build_columnar_causal_mask, build_flex_columnar_mask
 from src.data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
 from src.data.parallel_collator import ParallelPretrainCollator
 from src.model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 
 warnings.filterwarnings('ignore')
+
+# Will be set to True when --use_flex_attention is passed
+_use_flex_attn = False
+
+
+def _build_mask(batch, device):
+    """Build attention mask: FlexAttention BlockMask or dense SDPA mask.
+
+    When using FlexAttention, pads all batch tensors to the BlockMask's padded_len
+    (multiple of 128) and returns the BlockMask.
+    """
+    time_ids = batch["time_ids"]
+    attention_mask = batch["attention_mask"]
+    if _use_flex_attn:
+        block_mask, padded_len = build_flex_columnar_mask(time_ids, attention_mask)
+        seq_len = time_ids.shape[1]
+        if padded_len > seq_len:
+            pad_size = padded_len - seq_len
+            for key in ("input_ids", "labels"):
+                pad_val = 0 if key == "input_ids" else -100
+                batch[key] = torch.nn.functional.pad(batch[key], (0, pad_size), value=pad_val)
+            batch["attention_mask"] = torch.nn.functional.pad(batch["attention_mask"], (0, pad_size), value=0)
+            batch["position_ids"] = torch.nn.functional.pad(batch["position_ids"], (0, pad_size), value=0)
+            batch["time_ids"] = torch.nn.functional.pad(batch["time_ids"], (0, pad_size), value=-1)
+            # pos2d: [B, S, 2]
+            batch["pos2d"] = torch.nn.functional.pad(batch["pos2d"], (0, 0, 0, pad_size), value=0)
+        return block_mask
+    return build_columnar_causal_mask(time_ids, attention_mask).to(device)
 
 
 def Logger(content):
@@ -124,7 +152,7 @@ def validate(val_loader, epoch, global_step):
         for batch in val_loader:
             batch = {k: v.to(args.device) for k, v in batch.items()}
             _ = batch.pop("branch_counts")
-            column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
+            column_mask = _build_mask(batch, args.device)
 
             with ctx:
                 outputs = model(
@@ -207,7 +235,7 @@ def train_epoch(epoch, wandb):
 
         batch = {k: v.to(args.device) for k, v in batch.items()}
         branch_counts = batch.pop("branch_counts")
-        column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(args.device)
+        column_mask = _build_mask(batch, args.device)
 
         # 更新计数：1 sample = 1 branch = 1 个 JSONL 行
         batch_samples = int(branch_counts.sum().item())  # 这个 batch 消耗的样本数（JSONL行数）
@@ -609,6 +637,9 @@ if __name__ == "__main__":
     parser.add_argument("--fpe_theta", type=float, default=10000.0, help="Fourier PE基础频率（仅当--pe fpe时使用）")
     parser.add_argument("--fpe_max_positions", type=int, default=512, help="Fourier PE最大位置数（branch数量一般很小，默认512）")
     parser.add_argument("--fpe_learnable", action="store_true", help="使Fourier PE可学习（默认固定）")
+    parser.add_argument("--use_flex_attention", action="store_true",
+                        help="使用 FlexAttention 替代 SDPA（需 PyTorch 2.5+, CUDA）。"
+                             "使用 BlockMask 避免 O(n^2) 显存占用，适合长序列多分支训练。")
 
     # 验证集参数
     parser.add_argument("--val_samples", type=int, default=0,
@@ -676,10 +707,18 @@ if __name__ == "__main__":
         fpe_theta=args.fpe_theta,
         fpe_max_positions=args.fpe_max_positions,
         fpe_learnable=args.fpe_learnable,
+        use_flex_attention=getattr(args, 'use_flex_attention', False),
     )
     if args.num_key_value_heads is not None:
         config_kwargs['num_key_value_heads'] = args.num_key_value_heads
     lm_config = MiniMindConfig(**config_kwargs)
+
+    # Set global flag for FlexAttention mask building
+    global _use_flex_attn
+    _use_flex_attn = getattr(args, 'use_flex_attention', False)
+    if _use_flex_attn:
+        Logger("✓ FlexAttention enabled: using BlockMask instead of dense O(n²) mask")
+
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)
     if not os.path.isabs(args.out_dir):

@@ -33,6 +33,7 @@ class MiniMindConfig(PretrainedConfig):
             fpe_theta: float = 10000.0,  # Fourier PE的基础频率
             fpe_max_positions: int = 512,  # Fourier PE支持的最大位置（branch数量一般很小，512足够）
             fpe_learnable: bool = False,  # Fourier PE是否可学习
+            use_flex_attention: bool = False,  # 使用 FlexAttention 替代 SDPA（需 PyTorch 2.5+, CUDA）
             ####################################################
             # Here are the specific configurations of MOE
             # When use_moe is false, the following is invalid
@@ -80,6 +81,7 @@ class MiniMindConfig(PretrainedConfig):
         self.fpe_theta = fpe_theta
         self.fpe_max_positions = fpe_max_positions
         self.fpe_learnable = fpe_learnable
+        self.use_flex_attention = use_flex_attention
         ####################################################
         # Here are the specific configurations of MOE
         # When use_moe is false, the following is invalid
@@ -114,6 +116,19 @@ from src.model.columnar import (
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from src.model.fourier_pe import FourierPositionEncoding
+
+# --- FlexAttention support (PyTorch 2.5+, CUDA only) ---
+_flex_attention_available = False
+_compiled_flex_attention = None
+_is_block_mask = lambda x: False  # noqa: E731
+
+try:
+    from torch.nn.attention.flex_attention import flex_attention, BlockMask
+    _flex_attention_available = True
+    _compiled_flex_attention = torch.compile(flex_attention)
+    _is_block_mask = lambda x: isinstance(x, BlockMask)  # noqa: E731
+except ImportError:
+    pass
 
 
 class RMSNorm(torch.nn.Module):
@@ -213,11 +228,12 @@ class Attention(nn.Module):
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
-        # 使用 PyTorch SDPA (自动选择最优 backend: FlashAttention / memory-efficient / math)
+        self.use_flex_attention = getattr(args, 'use_flex_attention', False)
+        self.use_gqa = self.n_rep > 1  # GQA when num_heads != num_kv_heads
 
     def forward(self,
                 x: torch.Tensor,
-                position_embeddings: Tuple[torch.Tensor, torch.Tensor],  # 修改为接收cos和sin
+                position_embeddings: Tuple[torch.Tensor, torch.Tensor],
                 past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
                 use_cache=False,
                 attention_mask: Optional[torch.Tensor] = None):
@@ -238,27 +254,39 @@ class Attention(nn.Module):
             xv = torch.cat([past_key_value[1], xv], dim=1)
         past_kv = (xk, xv) if use_cache else None
 
-        xq, xk, xv = (
-            xq.transpose(1, 2),
-            repeat_kv(xk, self.n_rep).transpose(1, 2),
-            repeat_kv(xv, self.n_rep).transpose(1, 2)
-        )
-
-        if attention_mask is not None:
-            if attention_mask.dim() == 4:
-                # 4D additive mask (columnar causal mask): [batch, 1, seq, seq]
-                attn_mask = attention_mask.to(xq.dtype)
-            else:
-                # 2D padding mask [batch, seq] -> 4D additive mask
-                attn_mask = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2).to(xq.dtype)) * torch.finfo(xq.dtype).min
-            output = F.scaled_dot_product_attention(
-                xq, xk, xv, attn_mask=attn_mask,
-                dropout_p=self.dropout if self.training else 0.0, is_causal=False)
+        # FlexAttention path: BlockMask + native GQA support
+        if self.use_flex_attention and _flex_attention_available and attention_mask is not None and _is_block_mask(attention_mask):
+            xq = xq.transpose(1, 2)  # [B, H, S, D]
+            xk = xk.transpose(1, 2)  # [B, KV_H, S, D]
+            xv = xv.transpose(1, 2)  # [B, KV_H, S, D]
+            output = _compiled_flex_attention(
+                xq, xk, xv,
+                block_mask=attention_mask,
+                enable_gqa=self.use_gqa,
+            )
         else:
-            output = F.scaled_dot_product_attention(
-                xq, xk, xv, attn_mask=None,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=(past_key_value is None and seq_len > 1))
+            # SDPA path (original)
+            xq, xk, xv = (
+                xq.transpose(1, 2),
+                repeat_kv(xk, self.n_rep).transpose(1, 2),
+                repeat_kv(xv, self.n_rep).transpose(1, 2)
+            )
+
+            if attention_mask is not None:
+                if attention_mask.dim() == 4:
+                    # 4D additive mask (columnar causal mask): [batch, 1, seq, seq]
+                    attn_mask = attention_mask.to(xq.dtype)
+                else:
+                    # 2D padding mask [batch, seq] -> 4D additive mask
+                    attn_mask = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2).to(xq.dtype)) * torch.finfo(xq.dtype).min
+                output = F.scaled_dot_product_attention(
+                    xq, xk, xv, attn_mask=attn_mask,
+                    dropout_p=self.dropout if self.training else 0.0, is_causal=False)
+            else:
+                output = F.scaled_dot_product_attention(
+                    xq, xk, xv, attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=(past_key_value is None and seq_len > 1))
 
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
         output = self.resid_dropout(self.o_proj(output))

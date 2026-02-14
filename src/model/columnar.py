@@ -423,6 +423,53 @@ def build_columnar_causal_mask(time_ids: torch.Tensor, pad_mask: torch.Tensor) -
     return mask
 
 
+def build_flex_columnar_mask(time_ids: torch.Tensor, pad_mask: torch.Tensor, BLOCK_SIZE: int = 128):
+    """Build a FlexAttention BlockMask for columnar causal attention.
+
+    Uses block-level sparsity instead of materializing a full [seq, seq] mask.
+    Requires PyTorch 2.5+ and CUDA.
+
+    Returns (block_mask, padded_len) where padded_len is the sequence length
+    rounded up to BLOCK_SIZE. Callers must pad Q/K/V to this length.
+    """
+    from torch.nn.attention.flex_attention import create_block_mask
+
+    batch, seq_len = time_ids.shape
+    pad_bool = pad_mask.bool()
+
+    # Pad seq_len to multiple of BLOCK_SIZE
+    padded_len = ((seq_len + BLOCK_SIZE - 1) // BLOCK_SIZE) * BLOCK_SIZE
+    if padded_len > seq_len:
+        # Pad lookup tensors so mask_mod can safely index up to padded_len-1
+        pad_size = padded_len - seq_len
+        time_padded = torch.nn.functional.pad(time_ids, (0, pad_size), value=-1)
+        pad_bool = torch.nn.functional.pad(pad_bool, (0, pad_size), value=False)
+    else:
+        time_padded = time_ids
+
+    time_clean = torch.where(pad_bool, time_padded, torch.full_like(time_padded, -1))
+
+    def columnar_causal_mod(b, h, q_idx, kv_idx):
+        q_time = time_clean[b, q_idx]
+        kv_time = time_clean[b, kv_idx]
+        q_valid = pad_bool[b, q_idx]
+        kv_valid = pad_bool[b, kv_idx]
+        # KV time strictly before Q time, OR self-attention (diagonal)
+        causal = (kv_time < q_time) | (q_idx == kv_idx)
+        return causal & q_valid & kv_valid
+
+    block_mask = create_block_mask(
+        columnar_causal_mod,
+        B=batch,
+        H=1,  # broadcast across all heads
+        Q_LEN=padded_len,
+        KV_LEN=padded_len,
+        device=time_ids.device,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    return block_mask, padded_len
+
+
 def build_incremental_causal_mask(time_list: List[int], device: torch.device) -> torch.Tensor:
     total_len = len(time_list)
     if total_len == 0:

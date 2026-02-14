@@ -16,7 +16,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenize
 from src.model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 from src.data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
 from src.data.parallel_collator import ParallelPretrainCollator
-from src.model.columnar import build_columnar_causal_mask
+from src.model.columnar import build_columnar_causal_mask, build_flex_columnar_mask
 
 
 def Logger(msg: str, *, rank0_only: bool = False, ddp: bool = False):
@@ -98,6 +98,7 @@ def load_model_and_tokenizer(args):
         fpe_theta=args.fpe_theta,
         fpe_max_positions=args.fpe_max_positions,
         fpe_learnable=args.fpe_learnable,
+        use_flex_attention=getattr(args, 'use_flex_attention', False),
     )
     if args.num_key_value_heads is not None:
         config_kwargs['num_key_value_heads'] = args.num_key_value_heads
@@ -225,7 +226,20 @@ def evaluate(model, tokenizer, args):
 
     for batch in loader:
         batch = {k: v.to(device) for k, v in batch.items()}
-        column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(device)
+        if getattr(args, 'use_flex_attention', False):
+            block_mask, padded_len = build_flex_columnar_mask(batch["time_ids"], batch["attention_mask"])
+            seq_len = batch["time_ids"].shape[1]
+            if padded_len > seq_len:
+                pad_size = padded_len - seq_len
+                batch["input_ids"] = torch.nn.functional.pad(batch["input_ids"], (0, pad_size), value=0)
+                batch["labels"] = torch.nn.functional.pad(batch["labels"], (0, pad_size), value=-100)
+                batch["attention_mask"] = torch.nn.functional.pad(batch["attention_mask"], (0, pad_size), value=0)
+                batch["position_ids"] = torch.nn.functional.pad(batch["position_ids"], (0, pad_size), value=0)
+                batch["time_ids"] = torch.nn.functional.pad(batch["time_ids"], (0, pad_size), value=-1)
+                batch["pos2d"] = torch.nn.functional.pad(batch["pos2d"], (0, 0, 0, pad_size), value=0)
+            column_mask = block_mask
+        else:
+            column_mask = build_columnar_causal_mask(batch["time_ids"], batch["attention_mask"]).to(device)
 
         with autocast_ctx:
             outputs = model(
@@ -306,6 +320,8 @@ def main():
     parser.add_argument('--fpe_theta', type=float, default=10000.0)
     parser.add_argument('--fpe_max_positions', type=int, default=512)
     parser.add_argument('--fpe_learnable', action='store_true')
+    parser.add_argument('--use_flex_attention', action='store_true',
+                        help='Use FlexAttention BlockMask instead of dense mask')
 
     # dataset (local JSONL or HF)
     parser.add_argument('--data_path', type=str, default=os.path.join(root_path, 'dataset', 'pretrain_hq_split.jsonl'))
