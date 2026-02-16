@@ -716,7 +716,7 @@ if __name__ == "__main__":
     # Set global flag for FlexAttention mask building
     _use_flex_attn = getattr(args, 'use_flex_attention', False)
     if _use_flex_attn:
-        Logger("✓ FlexAttention enabled: using BlockMask instead of dense O(n²) mask")
+        print("FlexAttention enabled: using BlockMask instead of dense O(n^2) mask")
 
     if not os.path.isabs(args.data_path):
         args.data_path = os.path.join(root_path, args.data_path)
