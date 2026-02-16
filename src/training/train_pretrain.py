@@ -714,7 +714,6 @@ if __name__ == "__main__":
     lm_config = MiniMindConfig(**config_kwargs)
 
     # Set global flag for FlexAttention mask building
-    global _use_flex_attn
     _use_flex_attn = getattr(args, 'use_flex_attention', False)
     if _use_flex_attn:
         Logger("✓ FlexAttention enabled: using BlockMask instead of dense O(n²) mask")
