@@ -42,10 +42,12 @@ class ParallelPretrainCollator:
             if isinstance(item, dict):
                 text = str(item.get("text", ""))
                 answer_offset = int(item.get("answer_offset", 0))
+                record: Dict[str, Any] = {"text": text, "answer_offset": answer_offset}
+                if "input_ids" in item:
+                    record["input_ids"] = item["input_ids"]
             else:
-                text = str(item)
-                answer_offset = 0
-            records.append({"text": text, "answer_offset": answer_offset})
+                record = {"text": str(item), "answer_offset": 0}
+            records.append(record)
 
         self._buffer.extend(records)
         samples = []
@@ -77,10 +79,7 @@ class ParallelPretrainCollator:
                     if not chunk:
                         break
 
-                    branches = [
-                        {"text": rec["text"], "answer_offset": rec.get("answer_offset", 0)}
-                        for rec in chunk
-                    ]
+                    branches = [dict(rec) for rec in chunk]
                     samples.append({"main": "", "branches": branches})
             else:
                 # 动态模式：每个 sample 的 branches 数量随机，samples 数量不固定
@@ -93,18 +92,12 @@ class ParallelPretrainCollator:
 
                     if num_branches >= self.min_branches:
                         chunk = buffered_texts[idx : idx + num_branches]
-                        branches = [
-                            {"text": rec["text"], "answer_offset": rec.get("answer_offset", 0)}
-                            for rec in chunk
-                        ]
+                        branches = [dict(rec) for rec in chunk]
                         samples.append({"main": "", "branches": branches})
                         idx += num_branches
                     elif num_branches > 0:
                         chunk = buffered_texts[idx : idx + num_branches]
-                        branches = [
-                            {"text": rec["text"], "answer_offset": rec.get("answer_offset", 0)}
-                            for rec in chunk
-                        ]
+                        branches = [dict(rec) for rec in chunk]
                         samples.append({"main": "", "branches": branches})
                         idx += num_branches
                     else:
@@ -121,16 +114,10 @@ class ParallelPretrainCollator:
             for idx in range(0, len(current), self.branches_per_sample):
                 chunk = current[idx : idx + self.branches_per_sample]
                 if len(chunk) >= self.branches_per_sample:
-                    branches = [
-                        {"text": rec["text"], "answer_offset": rec.get("answer_offset", 0)}
-                        for rec in chunk
-                    ]
+                    branches = [dict(rec) for rec in chunk]
                     samples.append({"main": "", "branches": branches})
                 elif len(chunk) > 0:
-                    branches = [
-                        {"text": rec["text"], "answer_offset": rec.get("answer_offset", 0)}
-                        for rec in chunk
-                    ]
+                    branches = [dict(rec) for rec in chunk]
                     samples.append({"main": "", "branches": branches})
 
             # 固定模式下，剩余文本放回缓冲区
@@ -145,10 +132,7 @@ class ParallelPretrainCollator:
                 fallback_records = records
             if fallback_records:
                 self._buffer.clear()
-                branches = [
-                    {"text": rec["text"], "answer_offset": rec.get("answer_offset", 0)}
-                    for rec in fallback_records
-                ]
+                branches = [dict(rec) for rec in fallback_records]
                 samples.append({"main": "", "branches": branches})
 
         layout = build_flat_linear_layout(

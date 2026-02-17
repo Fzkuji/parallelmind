@@ -421,6 +421,7 @@ class ParallelPretrainIterableDataset(IterableDataset):
         self.chunk_length = chunk_length
         self.tokenizer = tokenizer
         self.offline = offline
+        self._token_buffer: list = []  # packing 模式下跨 epoch 保留的尾部 tokens
 
         # 只在主进程打印初始化信息
         if self._is_main_process():
@@ -428,7 +429,7 @@ class ParallelPretrainIterableDataset(IterableDataset):
             if hf_subset:
                 print(f"  子集: {hf_subset}")
             if chunk_length:
-                print(f"  文本切分: 每个片段最大 {chunk_length} tokens")
+                print(f"  Token packing: 每个 chunk 固定 {chunk_length} tokens (短文档拼接，长文档跨 chunk)")
             else:
                 print(f"  警告：未设置 chunk_length，长文本不会被切分！")
             if not tokenizer:
@@ -559,9 +560,18 @@ class ParallelPretrainIterableDataset(IterableDataset):
         else:
             per_shard_max_samples = self.max_samples
 
-        # 迭代数据并手动分片 + 动态切分
-        chunk_count = 0  # 统计切分后的chunk数量（当前shard的训练样本数）
+        # 迭代数据并手动分片
+        chunk_count = 0  # 当前 shard 已产出的 chunk 数量
         global_idx = 0   # 全局样本索引
+
+        # Packing: 将多个文档拼接为固定长度的 token chunk
+        use_packing = self.chunk_length is not None and self.tokenizer is not None
+        token_buffer = self._token_buffer  # 复用上次剩余的 tokens
+
+        if use_packing:
+            # 一次性抑制 tokenizer 长文本警告
+            import logging
+            logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
 
         for item in dataset:
             # 手动分片：只处理属于当前 shard 的样本
@@ -573,18 +583,28 @@ class ParallelPretrainIterableDataset(IterableDataset):
             if isinstance(text_content, str) and text_content.strip():
                 text = text_content.strip()
 
-                # 动态切分文本
-                if self.chunk_length and self.tokenizer:
-                    chunks = self._chunk_text(text)
-                    for chunk in chunks:
+                if use_packing:
+                    # 文档间加 EOS 分隔
+                    if token_buffer:
+                        eos_id = self.tokenizer.eos_token_id
+                        if eos_id is not None:
+                            token_buffer.append(eos_id)
+                    token_buffer.extend(
+                        self.tokenizer.encode(text, add_special_tokens=False)
+                    )
+                    # 产出所有满长 chunk
+                    while len(token_buffer) >= self.chunk_length:
                         if per_shard_max_samples and chunk_count >= per_shard_max_samples:
-                            return  # 达到当前shard的chunk数量限制，停止生成
-                        yield {"text": chunk}
+                            return
+                        yield {"input_ids": token_buffer[:self.chunk_length]}
+                        token_buffer = token_buffer[self.chunk_length:]
                         chunk_count += 1
                 else:
                     if per_shard_max_samples and chunk_count >= per_shard_max_samples:
-                        return  # 达到当前shard的样本数量限制，停止生成
+                        return
                     yield {"text": text}
                     chunk_count += 1
 
             global_idx += 1
+        # 不足 chunk_length 的尾部 tokens 保留在 self._token_buffer，下次迭代继续使用
+        self._token_buffer = token_buffer
