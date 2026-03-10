@@ -973,3 +973,8 @@ if __name__ == "__main__":
 
         if args.branch_slice_count is not None and slice_idx is not None:
             Logger(f"=== 完成 branch slice {slice_desc} ===")
+
+    # 优雅退出 DDP
+    if ddp and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
