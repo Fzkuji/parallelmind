@@ -86,7 +86,7 @@ MAX_SEQ_LEN=2048
 ROPE_RATIOS=("0" "0.25" "0.5" "0.75" "1.0")
 ROPE_STRS=("00" "025" "05" "075" "10")
 
-EVAL_BRANCHES=(1 2 4 8 16 32)
+EVAL_BRANCHES=(1 2 4 8 16 32 64)
 
 # 训练分支配置: "min,max,batch_size,accum_steps,max_total_tokens"
 # max_total_tokens = max_branch × chunk_length
