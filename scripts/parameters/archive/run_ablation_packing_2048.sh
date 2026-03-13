@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # ============================================================================
-# ParallelMind Packing 消融实验（chunk-length=2048, FineWeb-Edu）
+# ParallelMind Packing 消融实验 v2（chunk-length=2048, FineWeb-Edu）
 # ============================================================================
 #
 # 目标：验证在长分支（2048 tokens/branch）下，time 维度的位置编码是否有用
 #       即 rope_2d_ratio < 1.0 是否优于 1.0
+#       + 扩展训练分支范围 (1-16)，利用 gradient checkpointing 突破显存限制
 #
 # 模型配置：
 #   hidden_size=1024, num_heads=16 (head_dim=64), num_layers=24, kv_heads=4
@@ -14,14 +15,14 @@
 # 数据：FineWeb-Edu sample-10BT (English, Mistral tokenizer)
 #   Token packing: 每个 branch 固定 2048 tokens
 #
-# 显存限制：max_total_tokens=8192 (训练时最多 4 branches)
+# 显存: gradient checkpointing 启用，max_total_tokens=32768 (16 branches × 2048)
 #
 # 实验设计：
 #   - rope_2d_ratio: 0, 0.25, 0.5, 0.75, 1.0
-#   - 训练分支配置: fixed1, 1-2, 1-4
-#   - 评估分支: 1, 2, 4, 8, 16 (eval 时动态调整 max_total_tokens)
+#   - 训练分支配置: fixed1, 1-2, 1-4, 1-8, 1-16
+#   - 评估分支: 1, 2, 4, 8, 16, 32 (eval 时动态调整 max_total_tokens)
 #
-# 总实验数: 5 ratios × 3 configs = 15 个训练 + 75 个评估
+# 总实验数: 5 ratios × 5 configs = 25 个训练 + 150 个评估
 #
 # 用法：
 #   ./run_ablation_packing_2048.sh           # 正常运行（跳过已完成的）
@@ -73,9 +74,9 @@ CHUNK_LENGTH=2048
 TOKENIZER="model_mistral_tok"
 
 # 训练配置
-MAX_TOTAL_TOKENS_TRAIN=8192    # 训练时总 token 上限
 MAX_SAMPLES=256000              # ~256K packed chunks ≈ 524M tokens
 MAX_SEQ_LEN=2048                # RoPE max_positions
+GRADIENT_CHECKPOINTING=true     # 启用 gradient checkpointing 以支持长序列
 
 # 评估配置
 EVAL_SAMPLES=32768              # 评估用文本数量
@@ -85,15 +86,24 @@ EVAL_DATA="--hf-dataset ${HF_DATASET} --hf-subset ${HF_SUBSET} --chunk-length ${
 ROPE_RATIOS=("0" "0.25" "0.5" "0.75" "1.0")
 ROPE_STRS=("00" "025" "05" "075" "10")
 
-# 训练分支配置: "min,max,batch_size,accum_steps"
+# 训练分支配置: "min,max,batch_size,accum_steps,max_total_tokens"
+# max_total_tokens = max_branch × chunk_length，避免无效 padding
+# 设计原则: per-GPU tokens per effective step ≈ constant (~32768)
+#   fixed1: pad_to=2048   → batch=4, accum=4 → 4×4×2048 = 32768 tokens/effective_step
+#   1-2:    pad_to=4096   → batch=4, accum=2 → 4×2×4096 = 32768
+#   1-4:    pad_to=8192   → batch=2, accum=2 → 2×2×8192 = 32768
+#   1-8:    pad_to=16384  → batch=1, accum=2 → 1×2×16384 = 32768
+#   1-16:   pad_to=32768  → batch=1, accum=1 → 1×1×32768 = 32768
 TRAIN_CONFIGS=(
-    "1,1,4,2"      # fixed1: batch=4, accum=2 (effective batch=8)
-    "1,2,2,1"      # 1-2: batch=2, accum=1
-    "1,4,1,1"      # 1-4: batch=1, accum=1
+    "1,1,4,4,2048"       # fixed1: batch=4, accum=4, pad_to=2048
+    "1,2,4,2,4096"       # 1-2: batch=4, accum=2, pad_to=4096
+    "1,4,2,2,8192"       # 1-4: batch=2, accum=2, pad_to=8192
+    "1,8,1,2,16384"      # 1-8: batch=1, accum=2, pad_to=16384
+    "1,16,1,1,32768"     # 1-16: batch=1, accum=1, pad_to=32768
 )
 
 # 评估分支列表
-EVAL_BRANCHES=(1 2 4 8 16)
+EVAL_BRANCHES=(1 2 4 8 16 32)
 
 # 解析参数
 FORCE_RERUN=false
@@ -219,6 +229,7 @@ run_training() {
     local BATCH_SIZE=$4
     local ACCUM_STEPS=$5
     local OUT_DIR=$6
+    local MAX_TOTAL=$7
     local MAX_RETRIES=3
     local RETRY=0
 
@@ -234,14 +245,22 @@ run_training() {
         log "  ROPE_2D_RATIO:    $ROPE_RATIO"
         log "  TRAIN_BRANCH:     $MIN_BRANCH-$MAX_BRANCH"
         log "  CHUNK_LENGTH:     $CHUNK_LENGTH"
-        log "  MAX_TOTAL_TOKENS: $MAX_TOTAL_TOKENS_TRAIN"
+        log "  MAX_TOTAL_TOKENS: $MAX_TOTAL"
         log "  BATCH_SIZE:       $BATCH_SIZE"
         log "  ACCUM_STEPS:      $ACCUM_STEPS"
         log "  OUT_DIR:          $OUT_DIR"
         log "========================================================================"
 
+        # 只在序列超过 8192 时启用 gradient checkpointing，避免不必要的 ~30% 减速
+        GC_FLAG=""
+        if [ "$GRADIENT_CHECKPOINTING" = true ] && [ "$MAX_TOTAL" -gt 8192 ]; then
+            GC_FLAG="--gradient_checkpointing"
+            log "  GRAD_CKPT:        ON (序列 $MAX_TOTAL > 8192)"
+        fi
+
         TRAIN_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS --master_port 29501 src/training/train_pretrain.py \
             --use_flex_attention \
+            $GC_FLAG \
             --pe rope \
             --rope_2d_ratio $ROPE_RATIO \
             --hidden_size $HIDDEN_SIZE \
@@ -254,7 +273,7 @@ run_training() {
             --tokenizer $TOKENIZER \
             --offline \
             --max_seq_len $MAX_SEQ_LEN \
-            --max_total_tokens $MAX_TOTAL_TOKENS_TRAIN \
+            --max_total_tokens $MAX_TOTAL \
             --epochs 1 \
             --batch_size $BATCH_SIZE \
             --accumulation_steps $ACCUM_STEPS \
@@ -337,6 +356,7 @@ run_evaluation() {
     if [ "$VAL_BRANCH" -ge 8 ]; then
         EVAL_BATCH=1
     fi
+
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
         log "[EVAL] VAL_BRANCH=$VAL_BRANCH, MAX_TOTAL=$EVAL_MAX_TOTAL, BATCH=$EVAL_BATCH (attempt $((RETRY + 1)))"
@@ -426,11 +446,12 @@ echo "  dataset:        $HF_DATASET ($HF_SUBSET)"
 echo "  chunk_length:   $CHUNK_LENGTH tokens/branch"
 echo "  tokenizer:      $TOKENIZER"
 echo "  max_samples:    $MAX_SAMPLES (~$((MAX_SAMPLES * CHUNK_LENGTH / 1000000))M tokens)"
-echo "  max_total:      $MAX_TOTAL_TOKENS_TRAIN (训练)"
+echo "  max_total:      per-config (2048 ~ 32768)"
+echo "  gradient_ckpt:  $GRADIENT_CHECKPOINTING"
 echo ""
 echo "实验配置:"
 echo "  rope_2d_ratio:  ${ROPE_RATIOS[*]}"
-echo "  训练分支配置:   fixed1, 1-2, 1-4"
+echo "  训练分支配置:   fixed1, 1-2, 1-4, 1-8, 1-16"
 echo "  评估分支:       ${EVAL_BRANCHES[*]}"
 echo "  总实验数:       $TOTAL_EXPERIMENTS 个训练 + $((TOTAL_EXPERIMENTS * ${#EVAL_BRANCHES[@]})) 个评估"
 echo "============================================================================"
@@ -465,6 +486,7 @@ for i in "${!ROPE_RATIOS[@]}"; do
         MAX_BRANCH=$(echo $CONFIG | cut -d',' -f2)
         BATCH_SIZE=$(echo $CONFIG | cut -d',' -f3)
         ACCUM_STEPS=$(echo $CONFIG | cut -d',' -f4)
+        MAX_TOTAL_TOKENS_TRAIN=$(echo $CONFIG | cut -d',' -f5)
 
         EXPERIMENT_COUNT=$((EXPERIMENT_COUNT + 1))
 
@@ -485,7 +507,7 @@ for i in "${!ROPE_RATIOS[@]}"; do
         record_loss "ROPE=$ROPE_RATIO, TRAIN=$BRANCH_STR"
         record_loss "OUT_DIR: $OUT_DIR"
 
-        if ! run_training "$ROPE_RATIO" "$MIN_BRANCH" "$MAX_BRANCH" "$BATCH_SIZE" "$ACCUM_STEPS" "$OUT_DIR"; then
+        if ! run_training "$ROPE_RATIO" "$MIN_BRANCH" "$MAX_BRANCH" "$BATCH_SIZE" "$ACCUM_STEPS" "$OUT_DIR" "$MAX_TOTAL_TOKENS_TRAIN"; then
             record_loss "[FAILED] Training failed"
             FAILED_COUNT=$((FAILED_COUNT + 1))
             continue
