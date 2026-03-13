@@ -460,6 +460,7 @@ class MiniMindModel(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([MiniMindBlock(l, config) for l in range(self.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.gradient_checkpointing = False
 
         rope_dim = config.hidden_size // config.num_attention_heads
         self.rotary_emb = SimpleRotaryEmbedding(rope_dim, config.rope_theta)
@@ -549,13 +550,24 @@ class MiniMindModel(nn.Module):
 
         presents = []
         for layer_idx, (layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
-            hidden_states, present = layer(
-                hidden_states,
-                position_embeddings,
-                past_key_value=past_key_value,
-                use_cache=use_cache,
-                attention_mask=attention_mask,
-            )
+            if self.gradient_checkpointing and self.training:
+                hidden_states, present = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    hidden_states,
+                    position_embeddings,
+                    past_key_value,
+                    use_cache,
+                    attention_mask,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states, present = layer(
+                    hidden_states,
+                    position_embeddings,
+                    past_key_value=past_key_value,
+                    use_cache=use_cache,
+                    attention_mask=attention_mask,
+                )
             presents.append(present)
 
         hidden_states = self.norm(hidden_states)

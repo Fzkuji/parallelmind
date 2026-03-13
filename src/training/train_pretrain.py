@@ -513,6 +513,12 @@ def init_model(lm_config):
 
     model = MiniMindForCausalLM(lm_config)
     model.resize_token_embeddings(vocab_size)
+
+    # Gradient checkpointing: trade compute for memory
+    if getattr(args, 'gradient_checkpointing', False):
+        model.model.gradient_checkpointing = True
+        Logger("Gradient checkpointing enabled")
+
     model = model.to(args.device)
 
     if args.init_weight:
@@ -582,6 +588,8 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain")
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--ddp", action="store_true")
+    parser.add_argument("--gradient_checkpointing", action="store_true",
+                        help="Enable gradient checkpointing to reduce memory at the cost of ~30%% slower training")
     parser.add_argument("--accumulation_steps", type=int, default=1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--warmup_iters", type=int, default=0)
