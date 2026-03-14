@@ -345,12 +345,24 @@ run_model_experiments() {
             local MODEL_PATH="$OUT_DIR/pretrain_${HIDDEN}.pth"
             [ ! -f "$MODEL_PATH" ] && continue
 
-            # 评估
+            # 评估 (eval 无 backward, 显存占用远小于训练)
             for VAL_B in "${EVAL_BRANCHES[@]}"; do
                 local EVAL_MAX_TOTAL=$((VAL_B * CHUNK_LENGTH))
-                local EVAL_BATCH=4
-                [ "$VAL_B" -ge 4 ] && EVAL_BATCH=2
-                [ "$VAL_B" -ge 8 ] && EVAL_BATCH=1
+                local EVAL_BATCH
+                if [ "$HIDDEN" -le 512 ]; then
+                    # small 模型: 显存充裕
+                    EVAL_BATCH=16
+                    [ "$VAL_B" -ge 8 ] && EVAL_BATCH=8
+                    [ "$VAL_B" -ge 16 ] && EVAL_BATCH=4
+                    [ "$VAL_B" -ge 32 ] && EVAL_BATCH=2
+                    [ "$VAL_B" -ge 64 ] && EVAL_BATCH=1
+                else
+                    # large 模型
+                    EVAL_BATCH=8
+                    [ "$VAL_B" -ge 4 ] && EVAL_BATCH=4
+                    [ "$VAL_B" -ge 8 ] && EVAL_BATCH=2
+                    [ "$VAL_B" -ge 16 ] && EVAL_BATCH=1
+                fi
 
                 local EVAL_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS --master_port $MASTER_PORT src/inference/eval_loss.py \
                     --model_path $MODEL_PATH --tokenizer $TOKENIZER \
