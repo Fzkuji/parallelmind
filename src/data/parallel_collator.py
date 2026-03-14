@@ -28,7 +28,7 @@ class ParallelPretrainCollator:
         self.min_branches = max(1, min_branches_per_sample)
         self.dynamic_mode = max_branches_per_sample is not None
         self.random_time_offset = random_time_offset
-        self.target_samples: Optional[int] = None  # 由训练脚本在 batch_by_samples 模式下设置
+        self.target_samples: Optional[int] = None  # 由训练脚本设置，确保每个 batch 输出固定数量的样本
         self._buffer: Deque[str] = deque()
         self.interleave_branches = interleave_branches
         self.branch_stride = branch_stride

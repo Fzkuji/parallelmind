@@ -224,10 +224,19 @@ def train_epoch(epoch, wandb):
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
 
+    # token 累积阈值：达到 3/4 × max_total_tokens 时触发 optimizer.step
+    token_budget = args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len
+    token_threshold = int(token_budget * 0.75)
+
     is_rank0 = (not ddp) or dist.get_rank() == 0
     pbar = tqdm(enumerate(train_loader), total=iter_per_epoch,
                 desc=f"Epoch {epoch+1}/{args.epochs}",
                 disable=not is_rank0, dynamic_ncols=True)
+
+    opt_step = 0           # optimizer step 计数
+    step_tokens = 0        # 当前 optimizer step 内累积的 token 数
+    step_micro_count = 0   # 当前 optimizer step 内的 micro-batch 数
+
     for step, batch in pbar:
         # 在第一个epoch的第一个step，打印batch示例
         if epoch == 0 and step == 0:
@@ -237,24 +246,24 @@ def train_epoch(epoch, wandb):
         branch_counts = batch.pop("branch_counts")
         column_mask = _build_mask(batch, args.device)
 
-        # 更新计数：1 sample = 1 branch = 1 个 JSONL 行
-        batch_samples = int(branch_counts.sum().item())  # 这个 batch 消耗的样本数（JSONL行数）
+        # 更新计数：branch_counts.sum() = 这个 sample 消耗的文本数
+        batch_samples = int(branch_counts.sum().item())
         processed_samples += batch_samples
 
-        # 计算学习率（streaming 模式下估算总步数）
+        # 本 micro-batch 的 token 数（序列长度，即 branch_count × chunk_length）
+        micro_tokens = batch["input_ids"].shape[1]  # 单 sample，序列长度 = 实际 token 数
+
+        # 计算学习率
         if iter_per_epoch is not None:
             current_step = epoch * iter_per_epoch + step
             total_steps = args.epochs * iter_per_epoch
         else:
-            # IterableDataset: 估算步数（假设每个 epoch 大约相同步数）
-            # 第一个 epoch 无法估算，使用简单的步数
             current_step = step
-            # 估算总步数：如果 max_samples 提供了，可以粗略估算
             if args.max_samples:
                 estimated_iter = args.max_samples // effective_batch_size
                 total_steps = estimated_iter * args.epochs
             else:
-                total_steps = 10000 * args.epochs  # 默认估算值
+                total_steps = 10000 * args.epochs
 
         lr = get_lr(current_step, total_steps, args.learning_rate)
         for param_group in optimizer.param_groups:
@@ -267,40 +276,45 @@ def train_epoch(epoch, wandb):
                 position_ids=batch["position_ids"],
                 pos2d=batch["pos2d"],
             )
-            # 注意：不再需要shift操作，因为collator已经构造了正确的per-branch labels
-            # logits[i]直接对应labels[i]（每个token预测同branch的下一个token）
             logits = outputs.logits.contiguous()
             labels = batch["labels"].contiguous()
 
-            # 计算本micro-batch的有效token数（labels!=-100）
             batch_valid_tokens = int((labels != -100).sum().item())
-            # 计算交叉熵损失
             loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
 
             if hasattr(outputs, "aux_loss"):
                 loss = loss + outputs.aux_loss
-            loss = loss / args.accumulation_steps
+            # 不除以固定 accumulation_steps，CrossEntropyLoss(mean) 已经按 token 平均
 
         scaler.scale(loss).backward()
 
-        # 累计全局token计数（按DDP进程总和口径）。
-        # 使用all_reduce聚合每个rank的有效token，确保各rank上的累计值一致。
+        # 累积 token 计数
+        step_tokens += micro_tokens
+        step_micro_count += 1
+
+        # 累计全局token计数（按DDP进程总和口径）
         global_batch_tokens = batch_valid_tokens
         if ddp:
             import torch as _torch
             _t = _torch.tensor([batch_valid_tokens], device=args.device, dtype=_torch.long)
             dist.all_reduce(_t, op=dist.ReduceOp.SUM)
             global_batch_tokens = int(_t.item())
-        # 记录到全局与本epoch窗口
         epoch_tokens_since_log += global_batch_tokens
-        # 使用全局变量记录训练至今累计token数
         trained_tokens += global_batch_tokens
 
-        # 记录优化步窗口统计（用未缩放loss，便于与acc=1对齐）
-        opt_loss_accum += loss.item() * args.accumulation_steps
+        # 记录优化步窗口统计
+        opt_loss_accum += loss.item()
         opt_micro_count += 1
 
-        if (step + 1) % args.accumulation_steps == 0:
+        # DDP 同步: 所有 GPU 必须在相同的 DataLoader 迭代次数后 step
+        # 使用 all_reduce(MIN) 确保所有 GPU 都超过阈值才 step
+        should_step = step_tokens >= token_threshold
+        if ddp:
+            _flag = torch.tensor([1 if should_step else 0], device=args.device, dtype=torch.int)
+            dist.all_reduce(_flag, op=dist.ReduceOp.MIN)
+            should_step = bool(int(_flag.item()))
+
+        if should_step:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
@@ -309,8 +323,11 @@ def train_epoch(epoch, wandb):
 
             optimizer.zero_grad(set_to_none=True)
 
+            opt_step += 1
+            step_tokens = 0
+            step_micro_count = 0
+
             # 更新进度条
-            opt_step = (step + 1) // args.accumulation_steps
             if is_rank0:
                 cur_loss = opt_loss_accum / max(1, opt_micro_count)
                 pbar.set_postfix(loss=f"{cur_loss:.3f}",
@@ -320,17 +337,13 @@ def train_epoch(epoch, wandb):
             # 仅在优化步边界按优化步频率打印日志
             if opt_step % max(1, args.log_interval) == 0:
                 spend_time = time.time() - start_time
-                # 计算实际的 batch 信息（当前微步）
                 batch_seq_len = batch["input_ids"].shape[1]
 
-                # 在 DDP 模式下，显示全局累计处理的样本数（所有GPU的总和）
                 if ddp:
                     global_processed_samples = processed_samples * dist.get_world_size()
                 else:
                     global_processed_samples = processed_samples
 
-                # 估算剩余时间：优先使用样本进度（训练时长 / 进度）
-                # 若 total_samples 可用，则用 processed_samples/total_samples 计算；否则退化到优化步口径
                 epsilon = 1e-9
                 if total_samples != float('inf') and total_samples > 0:
                     progress_ratio = min(1.0, max(0.0, global_processed_samples / max(total_samples, 1)))
@@ -340,9 +353,11 @@ def train_epoch(epoch, wandb):
                     else:
                         remaining_time = 0.0
                 elif iter_per_epoch is not None:
-                    import math as _math
-                    opt_iters_per_epoch = max(1, _math.ceil(iter_per_epoch / max(1, args.accumulation_steps)))
-                    progress_ratio = min(1.0, opt_step / max(1, args.epochs * opt_iters_per_epoch))
+                    # 估算：每个 opt step 大约消耗 token_budget 个 token
+                    avg_branches = (args.min_branches_per_sample + (args.max_branches_per_sample or args.branches_per_sample)) / 2
+                    est_samples_per_step = token_budget / max(1, avg_branches * (args.chunk_length or args.max_seq_len))
+                    est_opt_steps = iter_per_epoch / max(1, est_samples_per_step)
+                    progress_ratio = min(1.0, opt_step / max(1, args.epochs * est_opt_steps))
                     if progress_ratio > epsilon:
                         estimated_total_time = spend_time / progress_ratio
                         remaining_time = max(0.0, estimated_total_time - spend_time)
@@ -351,12 +366,10 @@ def train_epoch(epoch, wandb):
                 else:
                     remaining_time = 0.0
 
-                # 构建日志信息（按优化步口径）
                 total_samples_str = str(int(total_samples)) if total_samples != float('inf') else 'streaming'
                 avg_unscaled_loss = opt_loss_accum / max(1, opt_micro_count)
-                # 以分钟显示，避免过早显示为0，使用四舍五入
                 remaining_min = int((remaining_time / 60.0) + 0.5)
-                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} batch:[{}x{}] tokens_trained:{} epoch_Time:{}min:'.format(
+                log_msg = 'Epoch:[{}/{}]({}/{}) step:{} loss:{:.3f} lr:{:.12f} seq_len:{} tokens_trained:{} epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
                     global_processed_samples,
@@ -364,12 +377,10 @@ def train_epoch(epoch, wandb):
                     opt_step,
                     avg_unscaled_loss,
                     optimizer.param_groups[-1]['lr'],
-                    batch["input_ids"].shape[0],
                     batch_seq_len,
                     trained_tokens,
                     remaining_min)
 
-                # 不再打印到控制台（tqdm 进度条已覆盖），仅写文件日志
                 if ((not ddp) or dist.get_rank() == 0) and getattr(args, 'train_log_path', None):
                     try:
                         world = dist.get_world_size() if ddp else 1
@@ -381,7 +392,6 @@ def train_epoch(epoch, wandb):
                         "opt_step": int(opt_step),
                         "processed_samples": int(global_processed_samples),
                         "total_samples": (int(total_samples) if total_samples != float('inf') else None),
-                        "batch_size": int(batch["input_ids"].shape[0]),
                         "seq_len": int(batch_seq_len),
                         "loss": float(avg_unscaled_loss),
                         "lr": float(optimizer.param_groups[-1]['lr']),
@@ -391,9 +401,7 @@ def train_epoch(epoch, wandb):
                     })
 
                 if (wandb is not None) and (not ddp or dist.get_rank() == 0):
-                    # 与控制台一致的ETA估算（分钟）
                     estimated_epoch_time = remaining_min
-
                     wandb.log({
                         "loss": avg_unscaled_loss,
                         "lr": optimizer.param_groups[-1]['lr'],
@@ -406,10 +414,8 @@ def train_epoch(epoch, wandb):
 
         # 验证
         if val_loader is not None:
-            # 先本地计算，再在DDP下由rank0统一广播是否验证，避免不同rank条件不一致导致的死锁
             should_validate = False
 
-            # 方式0：基于token数的验证间隔（最高优先级）
             if args.val_interval_tokens > 0:
                 current_tokens = trained_tokens
                 if (not ddp) or dist.get_rank() == 0:
@@ -417,24 +423,18 @@ def train_epoch(epoch, wandb):
                         should_validate = True
                         last_val_tokens = current_tokens
 
-            # 方式1：基于优化步数的验证间隔
             if args.val_interval > 0 and not should_validate:
-                opt_step = (step + 1) // args.accumulation_steps
-                # 使用rank0做决策，避免步数/样本不一致
                 if (not ddp) or dist.get_rank() == 0:
-                    if opt_step % args.val_interval == 0:
+                    if opt_step > 0 and opt_step % args.val_interval == 0:
                         should_validate = True
 
-            # 方式2：基于样本数的验证间隔（优先级次之）
             if args.val_interval_samples > 0 and not should_validate:
-                # 在 DDP 模式下，使用估算的全局样本数
                 current_samples = processed_samples * (dist.get_world_size() if ddp else 1)
                 if (not ddp) or dist.get_rank() == 0:
                     if current_samples - last_val_samples >= args.val_interval_samples:
                         should_validate = True
                         last_val_samples = current_samples
 
-            # 在DDP下将rank0的should_validate广播给所有rank，确保一致进入/跳过验证
             if ddp:
                 import torch as _torch
                 flag = _torch.tensor([1 if should_validate else 0], device=args.device, dtype=_torch.int)
@@ -442,12 +442,10 @@ def train_epoch(epoch, wandb):
                 should_validate = bool(int(flag.item()))
 
             if should_validate:
-                opt_step = (step + 1) // args.accumulation_steps
-                global_step = epoch * (iter_per_epoch // args.accumulation_steps if iter_per_epoch else 0) + opt_step
-                # 所有rank同时验证并做全局聚合，避免其它rank在barrier处等待导致NCCL watchdog超时
+                global_step = epoch * (iter_per_epoch if iter_per_epoch else 0) + step
                 validate(val_loader, epoch, global_step)
 
-        if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
+        if opt_step > 0 and opt_step % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             _save_checkpoint(model, lm_config, args, final=False)
 
 
@@ -694,16 +692,9 @@ if __name__ == "__main__":
     # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
     branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
 
-    # batch_by_samples 模式：batch_size 表示 samples 数量，需要乘以 branches 来获取文本数量
-    # 默认模式：batch_size 已经表示文本数量（兼容旧行为）
-    if args.batch_by_samples:
-        if args.max_branches_per_sample is not None:
-            avg_branches = (args.min_branches_per_sample + args.max_branches_per_sample) / 2
-        else:
-            avg_branches = args.branches_per_sample
-        effective_batch_size = max(1, int(args.batch_size * avg_branches))
-    else:
-        effective_batch_size = args.batch_size * branches_multiplier
+    # 每次 DataLoader 取 max_branches 个文本，collator 生成 1 个 sample（随机 branch 数）
+    # 训练循环按 token 累积来决定何时 optimizer.step
+    effective_batch_size = branches_multiplier
 
     config_kwargs = dict(
         hidden_size=args.hidden_size,
@@ -733,15 +724,8 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
-    # 计算 tokens_per_iter
-    if args.batch_by_samples:
-        # batch_by_samples 模式：batch_size 表示 samples 数量
-        tokens_per_iter = args.batch_size * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
-    else:
-        # 默认模式：batch_size * branches 表示文本数量
-        # 每个 sample 大约有 max_total_tokens 个 tokens
-        # 但这只是估计值
-        tokens_per_iter = args.batch_size * branches_multiplier * (args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len)
+    # tokens_per_iter: 每个 optimizer step 目标的 token 数
+    tokens_per_iter = args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
@@ -802,15 +786,15 @@ if __name__ == "__main__":
     collator = ParallelPretrainCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
-        pad_to=args.max_total_tokens if args.max_total_tokens > 0 else None,
+        pad_to=None,  # 不 pad：每个 sample 长度 = branch_count × chunk_length
         max_branches_per_sample=args.max_branches_per_sample,
         min_branches_per_sample=args.min_branches_per_sample,
         random_time_offset=args.random_time_offset,
         interleave_branches=True,
         branch_stride=branch_stride,
     )
-    if args.batch_by_samples:
-        collator.target_samples = args.batch_size
+    # 每次 collator 调用输出 1 个 sample（随机 branch 数）
+    collator.target_samples = 1
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ["float16", "bfloat16"]))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     if ddp:
@@ -917,16 +901,15 @@ if __name__ == "__main__":
             val_collator = ParallelPretrainCollator(
                 tokenizer,
                 branches_per_sample=val_branches,
-                pad_to=args.max_total_tokens if args.max_total_tokens > 0 else None,
+                pad_to=None,  # 动态长度，与训练一致
                 max_branches_per_sample=val_max_branches,
                 min_branches_per_sample=val_min_branches,
                 random_time_offset=args.random_time_offset,
                 interleave_branches=True,
                 branch_stride=branch_stride,
             )
-            if args.batch_by_samples:
-                # 验证目标样本数 = 训练的2倍
-                val_collator.target_samples = max(1, args.batch_size * 2)
+            # 验证目标样本数 = 训练的2倍
+            val_collator.target_samples = max(1, args.batch_size * 2)
 
             # 记录验证分支配置
             if val_max_branches is not None:

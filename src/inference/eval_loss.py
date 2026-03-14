@@ -146,8 +146,8 @@ def evaluate(model, tokenizer, args):
         branch_stride=branch_stride,
     )
 
-    if args.batch_by_samples:
-        val_collator.target_samples = max(1, args.batch_size)
+    # 始终设置 target_samples，确保每个 batch 产生固定数量的样本
+    val_collator.target_samples = max(1, args.batch_size)
 
     # Dataset
     if getattr(args, 'hf_dataset', None):
@@ -192,10 +192,8 @@ def evaluate(model, tokenizer, args):
         sampler = torch.utils.data.distributed.DistributedSampler(ds, shuffle=False, drop_last=False) if args.ddp else None
         shuffle = sampler is None
 
-    if args.batch_by_samples:
-        effective_batch_size = max(1, int(args.batch_size * avg_branches))
-    else:
-        effective_batch_size = args.batch_size
+    # batch_size = 目标样本数, 需要取出足够的文本来构建这些样本
+    effective_batch_size = max(1, int(args.batch_size * avg_branches))
 
     loader = DataLoader(
         ds,

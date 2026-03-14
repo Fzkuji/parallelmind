@@ -17,7 +17,12 @@
 #   rope_2d_ratio:  0, 0.25, 0.5, 0.75, 1.0           (5 个)
 #   训练分支配置:   fixed1, 1-2, 1-4, 1-8, 1-16        (5 个)
 #   模型:          small, large                          (2 个)
-#   → 共 50 个训练 + 每个训练 6 个评估 = 300 个评估
+#   → 共 50 个训练 + 每个训练 7 个评估 = 350 个评估
+#
+# 训练方式:
+#   每次前向 1 个 sample（随机 branch 数，无 padding）
+#   累积 token ≥ 3/4 × 32768 = 24576 后 optimizer.step
+#   每个 step 约 24576~32768 tokens/GPU
 #
 # 用法:
 #   ./run_ablation.sh                          # 运行所有（跳过已完成）
@@ -88,13 +93,21 @@ ROPE_STRS=("00" "025" "05" "075" "10")
 
 EVAL_BRANCHES=(1 2 4 8 16 32 64)
 
-# 训练分支配置: "min,max,batch_size,accum_steps,max_total_tokens"
-# max_total_tokens = max_branch × chunk_length
-# tokens/effective_step ≈ 32768 (per GPU)
+# 训练分支配置: "min,max"
+# 训练循环按 token 累积决定何时 optimizer.step（阈值 = 3/4 × MAX_TOTAL_TOKENS）
+# 每次前向只处理 1 个 sample，无 batch、无 padding
 #
-# 对于 small 模型，显存充裕，可以用更大 batch；
-# 对于 large 模型，按下面的配置，高分支需要 gradient checkpointing。
-# 具体 batch/accum 在模型配置中定义。
+# MAX_TOTAL_TOKENS = 每个 optimizer step 的 token 预算 (per GPU)
+MAX_TOTAL_TOKENS=32768   # 16 × 2048
+
+# 训练分支配置
+TRAIN_CONFIGS=(
+    "1,1"     # fixed1
+    "1,2"     # 1-2
+    "1,4"     # 1-4
+    "1,8"     # 1-8
+    "1,16"    # 1-16
+)
 
 # ============================================================================
 # 工具函数
@@ -161,9 +174,7 @@ run_training() {
     local TRAIN_CMD=$1
     local OUT_DIR=$2
     local HIDDEN=$3
-    local BATCH=$4
-    local ACCUM=$5
-    local MAX_RETRIES=3
+    local MAX_RETRIES=2
     local RETRY=0
 
     if [ "$FORCE_RERUN" = false ] && is_training_completed "$OUT_DIR" "$HIDDEN"; then
@@ -195,14 +206,7 @@ run_training() {
 
         if check_oom "$OUTPUT"; then
             RETRY=$((RETRY + 1))
-            if [ $BATCH -gt 1 ]; then
-                BATCH=$((BATCH / 2))
-                ACCUM=$((ACCUM * 2))
-            else
-                ACCUM=$((ACCUM * 2))
-            fi
-            TRAIN_CMD=$(echo "$TRAIN_CMD" | sed "s/--batch_size [0-9]*/--batch_size $BATCH/" | sed "s/--accumulation_steps [0-9]*/--accumulation_steps $ACCUM/")
-            log "[TRAIN] OOM → retry batch=$BATCH, accum=$ACCUM"
+            log "[TRAIN] OOM → retry $((RETRY))/$MAX_RETRIES"
         else
             record_error "[TRAIN FAILED] $OUT_DIR (non-OOM)"
             return 1
@@ -280,9 +284,6 @@ run_model_experiments() {
     local LAYERS=$4
     local KV_HEADS=$5
     local MAX_SAMPLES=$6
-    shift 6
-    # 剩余参数是 TRAIN_CONFIGS 数组
-    local TRAIN_CONFIGS=("$@")
 
     local MODEL_TAG="${HIDDEN}-h${HEADS}-kv${KV_HEADS}-l${LAYERS}"
     local LOG_DIR="scripts/logs/ablation_${MODEL_TAG}"
@@ -295,6 +296,7 @@ run_model_experiments() {
     log "模型: ${MODEL_TAG} ($MODEL_NAME)"
     log "数据: $HF_DATASET ($HF_SUBSET), chunk=$CHUNK_LENGTH"
     log "样本: $MAX_SAMPLES (~$((MAX_SAMPLES * CHUNK_LENGTH / 1000000))M tokens)"
+    log "token预算: $MAX_TOTAL_TOKENS/step/GPU (阈值 3/4)"
     log "训练: ${#TRAIN_CONFIGS[@]} configs × ${#ROPE_RATIOS[@]} ratios = $STAGE_TOTAL"
     log "评估: ${EVAL_BRANCHES[*]}"
     log "================================================================"
@@ -307,9 +309,6 @@ run_model_experiments() {
         for CONFIG in "${TRAIN_CONFIGS[@]}"; do
             local MIN_B=$(echo $CONFIG | cut -d',' -f1)
             local MAX_B=$(echo $CONFIG | cut -d',' -f2)
-            local BATCH=$(echo $CONFIG | cut -d',' -f3)
-            local ACCUM=$(echo $CONFIG | cut -d',' -f4)
-            local MAX_TOTAL=$(echo $CONFIG | cut -d',' -f5)
             COUNT=$((COUNT + 1))
 
             local BRANCH_STR
@@ -318,13 +317,14 @@ run_model_experiments() {
             local OUT_DIR="out/${MODEL_TAG}-r${ROPE_STR}-b${BRANCH_STR}"
 
             log ""
-            log ">>> [${MODEL_TAG}] $COUNT/$STAGE_TOTAL | rope=$ROPE_RATIO, train=$BRANCH_STR, max_total=$MAX_TOTAL"
+            log ">>> [${MODEL_TAG}] $COUNT/$STAGE_TOTAL | rope=$ROPE_RATIO, train=$BRANCH_STR"
 
-            # Gradient checkpointing: 只在序列 > 8192 时启用
+            # Gradient checkpointing: 当最大 sample 长度 > 8192 时启用
+            local MAX_SAMPLE_LEN=$((MAX_B * CHUNK_LENGTH))
             local GC_FLAG=""
-            if [ "$MAX_TOTAL" -gt 8192 ]; then
+            if [ "$MAX_SAMPLE_LEN" -gt 8192 ]; then
                 GC_FLAG="--gradient_checkpointing"
-                log "  gradient_checkpointing: ON"
+                log "  gradient_checkpointing: ON (max_sample=$MAX_SAMPLE_LEN)"
             fi
 
             local TRAIN_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS --master_port $MASTER_PORT src/training/train_pretrain.py \
@@ -332,13 +332,13 @@ run_model_experiments() {
                 --pe rope --rope_2d_ratio $ROPE_RATIO \
                 --hidden_size $HIDDEN --num_attention_heads $HEADS --num_hidden_layers $LAYERS --num_key_value_heads $KV_HEADS \
                 --hf-dataset $HF_DATASET --hf-subset $HF_SUBSET --chunk-length $CHUNK_LENGTH --tokenizer $TOKENIZER --offline \
-                --max_seq_len $MAX_SEQ_LEN --max_total_tokens $MAX_TOTAL \
-                --epochs 1 --batch_size $BATCH --accumulation_steps $ACCUM \
+                --max_seq_len $MAX_SEQ_LEN --max_total_tokens $MAX_TOTAL_TOKENS \
+                --epochs 1 \
                 --max_branches_per_sample $MAX_B --min_branches_per_sample $MIN_B \
                 --max-samples $MAX_SAMPLES \
                 --out_dir $OUT_DIR --ddp"
 
-            if ! run_training "$TRAIN_CMD" "$OUT_DIR" "$HIDDEN" "$BATCH" "$ACCUM"; then
+            if ! run_training "$TRAIN_CMD" "$OUT_DIR" "$HIDDEN"; then
                 continue
             fi
 
@@ -350,14 +350,12 @@ run_model_experiments() {
                 local EVAL_MAX_TOTAL=$((VAL_B * CHUNK_LENGTH))
                 local EVAL_BATCH
                 if [ "$HIDDEN" -le 512 ]; then
-                    # small 模型: 显存充裕
                     EVAL_BATCH=16
                     [ "$VAL_B" -ge 8 ] && EVAL_BATCH=8
                     [ "$VAL_B" -ge 16 ] && EVAL_BATCH=4
                     [ "$VAL_B" -ge 32 ] && EVAL_BATCH=2
                     [ "$VAL_B" -ge 64 ] && EVAL_BATCH=1
                 else
-                    # large 模型
                     EVAL_BATCH=8
                     [ "$VAL_B" -ge 4 ] && EVAL_BATCH=4
                     [ "$VAL_B" -ge 8 ] && EVAL_BATCH=2
@@ -402,49 +400,32 @@ echo "Model filter: ${RUN_MODEL:-all}"
 echo "Force: $FORCE_RERUN"
 echo "============================================================================"
 
-# --- Small 模型配置 ---
-# 512 模型显存充裕，不需要 gradient checkpointing
-# tokens/effective_step ≈ 32768
-SMALL_CONFIGS=(
-    "1,1,8,2,2048"       # fixed1: 8×2×2048 = 32768
-    "1,2,4,2,4096"       # 1-2:   4×2×4096 = 32768
-    "1,4,2,2,8192"       # 1-4:   2×2×8192 = 32768
-    "1,8,2,1,16384"      # 1-8:   2×1×16384 = 32768
-    "1,16,1,1,32768"     # 1-16:  1×1×32768 = 32768
-)
+# --- 模型样本数 ---
 SMALL_SAMPLES=512000     # ~1B tokens
-
-# --- Large 模型配置 ---
-# tokens/effective_step ≈ 32768
-LARGE_CONFIGS=(
-    "1,1,4,4,2048"       # fixed1: 4×4×2048 = 32768
-    "1,2,4,2,4096"       # 1-2:   4×2×4096 = 32768
-    "1,4,2,2,8192"       # 1-4:   2×2×8192 = 32768
-    "1,8,1,2,16384"      # 1-8:   1×2×16384 = 32768 (GC)
-    "1,16,1,1,32768"     # 1-16:  1×1×32768 = 32768 (GC)
-)
 LARGE_SAMPLES=256000     # ~524M tokens
 
-# 计算全局总数
+# 计算全局总数（所有 config 共用 TRAIN_CONFIGS）
+CONFIGS_PER_MODEL=${#TRAIN_CONFIGS[@]}
 if [ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "small" ]; then
-    GLOBAL_TOTAL=$((GLOBAL_TOTAL + ${#ROPE_RATIOS[@]} * ${#SMALL_CONFIGS[@]}))
+    GLOBAL_TOTAL=$((GLOBAL_TOTAL + ${#ROPE_RATIOS[@]} * CONFIGS_PER_MODEL))
 fi
 if [ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "large" ]; then
-    GLOBAL_TOTAL=$((GLOBAL_TOTAL + ${#ROPE_RATIOS[@]} * ${#LARGE_CONFIGS[@]}))
+    GLOBAL_TOTAL=$((GLOBAL_TOTAL + ${#ROPE_RATIOS[@]} * CONFIGS_PER_MODEL))
 fi
 
 echo ""
 echo "实验总数: $GLOBAL_TOTAL 个训练 + $((GLOBAL_TOTAL * ${#EVAL_BRANCHES[@]})) 个评估"
+echo "token预算: $MAX_TOTAL_TOKENS/step/GPU"
 echo "============================================================================"
 echo ""
 
 # 运行
 if [ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "small" ]; then
-    run_model_experiments "small" 512 8 8 2 $SMALL_SAMPLES "${SMALL_CONFIGS[@]}"
+    run_model_experiments "small" 512 8 8 2 $SMALL_SAMPLES
 fi
 
 if [ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "large" ]; then
-    run_model_experiments "large" 1024 16 24 4 $LARGE_SAMPLES "${LARGE_CONFIGS[@]}"
+    run_model_experiments "large" 1024 16 24 4 $LARGE_SAMPLES
 fi
 
 # ============================================================================
