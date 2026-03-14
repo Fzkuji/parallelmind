@@ -67,8 +67,8 @@ done
 # ============================================================================
 # GPU 配置
 # ============================================================================
-export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
-NUM_GPUS=7
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+NUM_GPUS=8
 MASTER_PORT=29501
 
 # ============================================================================
@@ -284,14 +284,15 @@ run_model_experiments() {
     # 剩余参数是 TRAIN_CONFIGS 数组
     local TRAIN_CONFIGS=("$@")
 
-    local LOG_DIR="scripts/logs/ablation_${MODEL_NAME}"
+    local MODEL_TAG="${HIDDEN}-h${HEADS}-kv${KV_HEADS}-l${LAYERS}"
+    local LOG_DIR="scripts/logs/ablation_${MODEL_TAG}"
     init_logs "$LOG_DIR"
 
     local STAGE_TOTAL=$((${#ROPE_RATIOS[@]} * ${#TRAIN_CONFIGS[@]}))
 
     log ""
     log "================================================================"
-    log "模型: $MODEL_NAME (h=$HIDDEN, ${HEADS}h, ${LAYERS}L, kv=$KV_HEADS)"
+    log "模型: ${MODEL_TAG} ($MODEL_NAME)"
     log "数据: $HF_DATASET ($HF_SUBSET), chunk=$CHUNK_LENGTH"
     log "样本: $MAX_SAMPLES (~$((MAX_SAMPLES * CHUNK_LENGTH / 1000000))M tokens)"
     log "训练: ${#TRAIN_CONFIGS[@]} configs × ${#ROPE_RATIOS[@]} ratios = $STAGE_TOTAL"
@@ -314,10 +315,10 @@ run_model_experiments() {
             local BRANCH_STR
             if [ "$MIN_B" -eq "$MAX_B" ]; then BRANCH_STR="fixed${MAX_B}"; else BRANCH_STR="${MIN_B}-${MAX_B}"; fi
 
-            local OUT_DIR="out/${MODEL_NAME}-r${ROPE_STR}-b${BRANCH_STR}"
+            local OUT_DIR="out/${MODEL_TAG}-r${ROPE_STR}-b${BRANCH_STR}"
 
             log ""
-            log ">>> [$MODEL_NAME] $COUNT/$STAGE_TOTAL | rope=$ROPE_RATIO, train=$BRANCH_STR, max_total=$MAX_TOTAL"
+            log ">>> [${MODEL_TAG}] $COUNT/$STAGE_TOTAL | rope=$ROPE_RATIO, train=$BRANCH_STR, max_total=$MAX_TOTAL"
 
             # Gradient checkpointing: 只在序列 > 8192 时启用
             local GC_FLAG=""
@@ -444,6 +445,6 @@ echo "实验完成！总耗时: $(format_duration $TOTAL_TIME)"
 echo "完成: $GLOBAL_COMPLETED / $GLOBAL_TOTAL"
 echo ""
 echo "结果:"
-[ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "small" ] && echo "  scripts/logs/ablation_small/results.csv"
-[ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "large" ] && echo "  scripts/logs/ablation_large/results.csv"
+[ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "small" ] && echo "  scripts/logs/ablation_512-h8-kv2-l8/results.csv"
+[ -z "$RUN_MODEL" ] || [ "$RUN_MODEL" = "large" ] && echo "  scripts/logs/ablation_1024-h16-kv4-l24/results.csv"
 echo "============================================================================"
