@@ -187,6 +187,12 @@ run_training() {
             return 0
         fi
 
+        # 训练完成但 NCCL 退出时崩溃 — 模型已保存则视为成功
+        if is_training_completed "$OUT_DIR" "$HIDDEN"; then
+            log "[TRAIN] Model saved despite non-zero exit (NCCL cleanup issue): $OUT_DIR"
+            return 0
+        fi
+
         if check_oom "$OUTPUT"; then
             RETRY=$((RETRY + 1))
             if [ $BATCH -gt 1 ]; then

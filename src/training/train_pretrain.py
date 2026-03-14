@@ -979,6 +979,10 @@ if __name__ == "__main__":
             _save_checkpoint(model, lm_config, args, final=True)
             Logger("Training complete. Final model saved.")
 
+        # 所有 rank 同步，等待 rank 0 保存完毕
+        if ddp and dist.is_initialized():
+            dist.barrier()
+
         if args.branch_slice_count is not None and slice_idx is not None:
             Logger(f"=== 完成 branch slice {slice_desc} ===")
 
