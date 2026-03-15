@@ -20,9 +20,9 @@
 #   → 共 50 个训练 + 每个训练 7 个评估 = 350 个评估
 #
 # 训练方式:
-#   每次前向 1 个 sample（随机 branch 数，无 padding）
-#   累积 token ≥ 3/4 × 32768 = 24576 后 optimizer.step
-#   每个 step 约 24576~32768 tokens/GPU
+#   每个 micro-batch 随机采样 branch 数 b，batch 内所有 sample 用相同 b
+#   固定 batch_size × accumulation_steps，总 token/step = max_b × batch_size × chunk_length × accum
+#   不同 branch 数训练的总 token 相同（b 小 → sample 多，b 大 → sample 少）
 #
 # 用法:
 #   ./run_ablation.sh                          # 运行所有（跳过已完成）
@@ -93,20 +93,23 @@ ROPE_STRS=("00" "025" "05" "075" "10")
 
 EVAL_BRANCHES=(1 2 4 8 16 32 64)
 
-# 训练分支配置: "min,max"
-# 训练循环按 token 累积决定何时 optimizer.step（阈值 = 3/4 × MAX_TOTAL_TOKENS）
-# 每次前向只处理 1 个 sample，无 batch、无 padding
+# 训练方式:
+#   每个 micro-batch 随机采样一个 branch 数 b，batch 内所有 sample 都用 b 个 branch
+#   DataLoader 每次取 max_b × batch_size 个文本，collator 按 b 分组
+#   当 b 小时 sample 数多，b 大时 sample 数少，总 token 数恒定 = max_b × batch_size × chunk_length
+#   固定 accumulation_steps，梯度累积后 optimizer.step
 #
-# MAX_TOTAL_TOKENS = 每个 optimizer step 的 token 预算 (per GPU)
+# MAX_TOTAL_TOKENS: 用于 pad_to（所有 sample pad 到相同长度以支持 batching）
 MAX_TOTAL_TOKENS=32768   # 16 × 2048
+ACCUMULATION_STEPS=2
 
-# 训练分支配置
+# 训练分支配置: "min,max,batch_size"
 TRAIN_CONFIGS=(
-    "1,1"     # fixed1
-    "1,2"     # 1-2
-    "1,4"     # 1-4
-    "1,8"     # 1-8
-    "1,16"    # 1-16
+    "1,1,16"    # fixed1: 16 samples/micro-batch
+    "1,2,8"     # 1-2: max 8 samples (when b=2), 16 samples (when b=1)
+    "1,4,4"     # 1-4
+    "1,8,2"     # 1-8
+    "1,16,1"    # 1-16
 )
 
 # ============================================================================
@@ -296,7 +299,7 @@ run_model_experiments() {
     log "模型: ${MODEL_TAG} ($MODEL_NAME)"
     log "数据: $HF_DATASET ($HF_SUBSET), chunk=$CHUNK_LENGTH"
     log "样本: $MAX_SAMPLES (~$((MAX_SAMPLES * CHUNK_LENGTH / 1000000))M tokens)"
-    log "token预算: $MAX_TOTAL_TOKENS/step/GPU (阈值 3/4)"
+    log "accumulation_steps: $ACCUMULATION_STEPS"
     log "训练: ${#TRAIN_CONFIGS[@]} configs × ${#ROPE_RATIOS[@]} ratios = $STAGE_TOTAL"
     log "评估: ${EVAL_BRANCHES[*]}"
     log "================================================================"
@@ -309,6 +312,7 @@ run_model_experiments() {
         for CONFIG in "${TRAIN_CONFIGS[@]}"; do
             local MIN_B=$(echo $CONFIG | cut -d',' -f1)
             local MAX_B=$(echo $CONFIG | cut -d',' -f2)
+            local BATCH_SIZE=$(echo $CONFIG | cut -d',' -f3)
             COUNT=$((COUNT + 1))
 
             local BRANCH_STR
@@ -316,23 +320,20 @@ run_model_experiments() {
 
             local OUT_DIR="out/${MODEL_TAG}-r${ROPE_STR}-b${BRANCH_STR}"
 
+            # 每个 micro-batch 的总 token 数 = max_b × batch_size × chunk_length
+            local MICRO_TOKENS=$((MAX_B * BATCH_SIZE * CHUNK_LENGTH))
+
             log ""
-            log ">>> [${MODEL_TAG}] $COUNT/$STAGE_TOTAL | rope=$ROPE_RATIO, train=$BRANCH_STR"
+            log ">>> [${MODEL_TAG}] $COUNT/$STAGE_TOTAL | rope=$ROPE_RATIO, train=$BRANCH_STR, batch=$BATCH_SIZE, micro_tokens=$MICRO_TOKENS"
 
-            # Gradient checkpointing: 当最大 sample 长度 > 8192 时启用
-            local MAX_SAMPLE_LEN=$((MAX_B * CHUNK_LENGTH))
-            local GC_FLAG=""
-            if [ "$MAX_SAMPLE_LEN" -gt 8192 ]; then
-                GC_FLAG="--gradient_checkpointing"
-                log "  gradient_checkpointing: ON (max_sample=$MAX_SAMPLE_LEN)"
-            fi
-
+            # Gradient checkpointing 自适应：训练循环在 seq_len > 8192 时自动启用
             local TRAIN_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS --master_port $MASTER_PORT src/training/train_pretrain.py \
-                --use_flex_attention $GC_FLAG \
+                --use_flex_attention \
                 --pe rope --rope_2d_ratio $ROPE_RATIO \
                 --hidden_size $HIDDEN --num_attention_heads $HEADS --num_hidden_layers $LAYERS --num_key_value_heads $KV_HEADS \
                 --hf-dataset $HF_DATASET --hf-subset $HF_SUBSET --chunk-length $CHUNK_LENGTH --tokenizer $TOKENIZER --offline \
                 --max_seq_len $MAX_SEQ_LEN --max_total_tokens $MAX_TOTAL_TOKENS \
+                --batch_size $BATCH_SIZE --accumulation_steps $ACCUMULATION_STEPS \
                 --epochs 1 \
                 --max_branches_per_sample $MAX_B --min_branches_per_sample $MIN_B \
                 --max-samples $MAX_SAMPLES \
@@ -415,7 +416,7 @@ fi
 
 echo ""
 echo "实验总数: $GLOBAL_TOTAL 个训练 + $((GLOBAL_TOTAL * ${#EVAL_BRANCHES[@]})) 个评估"
-echo "token预算: $MAX_TOTAL_TOKENS/step/GPU"
+echo "accumulation_steps: $ACCUMULATION_STEPS"
 echo "============================================================================"
 echo ""
 

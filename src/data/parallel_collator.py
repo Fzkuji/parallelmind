@@ -29,6 +29,7 @@ class ParallelPretrainCollator:
         self.dynamic_mode = max_branches_per_sample is not None
         self.random_time_offset = random_time_offset
         self.target_samples: Optional[int] = None  # 由训练脚本设置，确保每个 batch 输出固定数量的样本
+        self.fixed_branch_count: Optional[int] = None  # 由训练脚本每个 micro-batch 前设置，强制所有 sample 使用相同 branch 数
         self._buffer: Deque[str] = deque()
         self.interleave_branches = interleave_branches
         self.branch_stride = branch_stride
@@ -52,7 +53,25 @@ class ParallelPretrainCollator:
         self._buffer.extend(records)
         samples = []
 
-        if self.dynamic_mode:
+        # 如果外部设置了 fixed_branch_count，所有 sample 使用相同的 branch 数
+        num_per_sample = self.fixed_branch_count if self.fixed_branch_count is not None else None
+
+        if num_per_sample is not None:
+            # 固定 branch 数模式（由训练循环每个 micro-batch 前设置）
+            current = list(self._buffer)
+            self._buffer.clear()
+            for idx in range(0, len(current), num_per_sample):
+                chunk = current[idx : idx + num_per_sample]
+                if len(chunk) >= num_per_sample:
+                    branches = [dict(rec) for rec in chunk]
+                    samples.append({"main": "", "branches": branches})
+
+            # 剩余文本放回缓冲区
+            unused = len(current) % num_per_sample
+            if unused:
+                for txt in current[-unused:]:
+                    self._buffer.append(txt)
+        elif self.dynamic_mode:
             target_samples = self.target_samples
             if target_samples is not None and target_samples > 0:
                 for sample_idx in range(target_samples):

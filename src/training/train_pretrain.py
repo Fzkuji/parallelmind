@@ -224,20 +224,38 @@ def train_epoch(epoch, wandb):
     if ddp and isinstance(train_loader.sampler, DistributedSampler):
         train_loader.sampler.set_epoch(epoch)
 
-    # token 累积阈值：达到 3/4 × max_total_tokens 时触发 optimizer.step
-    token_budget = args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len
-    token_threshold = int(token_budget * 0.75)
-
     is_rank0 = (not ddp) or dist.get_rank() == 0
-    pbar = tqdm(enumerate(train_loader), total=iter_per_epoch,
+
+    # 动态 branch 模式：每个 accumulation step 随机一个 branch 数
+    dynamic_branch = args.max_branches_per_sample is not None and args.max_branches_per_sample > args.min_branches_per_sample
+    min_b = args.min_branches_per_sample
+    max_b = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
+
+    # DDP: 同步随机种子，确保所有 GPU 在同一 step 使用相同的 branch 数
+    if ddp:
+        branch_rng = random.Random(1337 + epoch)
+    else:
+        branch_rng = random.Random()
+
+    pbar = tqdm(total=iter_per_epoch,
                 desc=f"Epoch {epoch+1}/{args.epochs}",
                 disable=not is_rank0, dynamic_ncols=True)
 
     opt_step = 0           # optimizer step 计数
-    step_tokens = 0        # 当前 optimizer step 内累积的 token 数
-    step_micro_count = 0   # 当前 optimizer step 内的 micro-batch 数
+    train_iter = iter(train_loader)
+    step = 0
 
-    for step, batch in pbar:
+    while True:
+        # 每个 micro-batch 前随机设置 branch 数（num_workers=0 时 collator 在主进程同步执行）
+        if dynamic_branch:
+            new_b = branch_rng.randint(min_b, max_b)
+            collator.fixed_branch_count = new_b
+
+        try:
+            batch = next(train_iter)
+        except StopIteration:
+            break
+
         # 在第一个epoch的第一个step，打印batch示例
         if epoch == 0 and step == 0:
             print_first_batch_sample(batch, tokenizer)
@@ -246,12 +264,16 @@ def train_epoch(epoch, wandb):
         branch_counts = batch.pop("branch_counts")
         column_mask = _build_mask(batch, args.device)
 
+        # 自适应 gradient checkpointing：序列长度 > 8192 时启用
+        seq_len = batch["input_ids"].shape[1]
+        _model_ref = model.module if isinstance(model, DistributedDataParallel) else model
+        need_gc = seq_len > 8192
+        if hasattr(_model_ref, 'model') and hasattr(_model_ref.model, 'gradient_checkpointing'):
+            _model_ref.model.gradient_checkpointing = need_gc
+
         # 更新计数：branch_counts.sum() = 这个 sample 消耗的文本数
         batch_samples = int(branch_counts.sum().item())
         processed_samples += batch_samples
-
-        # 本 micro-batch 的 token 数（序列长度，即 branch_count × chunk_length）
-        micro_tokens = batch["input_ids"].shape[1]  # 单 sample，序列长度 = 实际 token 数
 
         # 计算学习率
         if iter_per_epoch is not None:
@@ -284,37 +306,25 @@ def train_epoch(epoch, wandb):
 
             if hasattr(outputs, "aux_loss"):
                 loss = loss + outputs.aux_loss
-            # 不除以固定 accumulation_steps，CrossEntropyLoss(mean) 已经按 token 平均
+
+            loss = loss / args.accumulation_steps
 
         scaler.scale(loss).backward()
-
-        # 累积 token 计数
-        step_tokens += micro_tokens
-        step_micro_count += 1
 
         # 累计全局token计数（按DDP进程总和口径）
         global_batch_tokens = batch_valid_tokens
         if ddp:
-            import torch as _torch
-            _t = _torch.tensor([batch_valid_tokens], device=args.device, dtype=_torch.long)
+            _t = torch.tensor([batch_valid_tokens], device=args.device, dtype=torch.long)
             dist.all_reduce(_t, op=dist.ReduceOp.SUM)
             global_batch_tokens = int(_t.item())
         epoch_tokens_since_log += global_batch_tokens
         trained_tokens += global_batch_tokens
 
-        # 记录优化步窗口统计
-        opt_loss_accum += loss.item()
+        # 记录优化步窗口统计（用未除 accumulation_steps 的原始 loss）
+        opt_loss_accum += loss.item() * args.accumulation_steps
         opt_micro_count += 1
 
-        # DDP 同步: 所有 GPU 必须在相同的 DataLoader 迭代次数后 step
-        # 使用 all_reduce(MIN) 确保所有 GPU 都超过阈值才 step
-        should_step = step_tokens >= token_threshold
-        if ddp:
-            _flag = torch.tensor([1 if should_step else 0], device=args.device, dtype=torch.int)
-            dist.all_reduce(_flag, op=dist.ReduceOp.MIN)
-            should_step = bool(int(_flag.item()))
-
-        if should_step:
+        if (step + 1) % args.accumulation_steps == 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
@@ -324,8 +334,6 @@ def train_epoch(epoch, wandb):
             optimizer.zero_grad(set_to_none=True)
 
             opt_step += 1
-            step_tokens = 0
-            step_micro_count = 0
 
             # 更新进度条
             if is_rank0:
@@ -353,11 +361,7 @@ def train_epoch(epoch, wandb):
                     else:
                         remaining_time = 0.0
                 elif iter_per_epoch is not None:
-                    # 估算：每个 opt step 大约消耗 token_budget 个 token
-                    avg_branches = (args.min_branches_per_sample + (args.max_branches_per_sample or args.branches_per_sample)) / 2
-                    est_samples_per_step = token_budget / max(1, avg_branches * (args.chunk_length or args.max_seq_len))
-                    est_opt_steps = iter_per_epoch / max(1, est_samples_per_step)
-                    progress_ratio = min(1.0, opt_step / max(1, args.epochs * est_opt_steps))
+                    progress_ratio = min(1.0, (step + 1) / max(1, iter_per_epoch))
                     if progress_ratio > epsilon:
                         estimated_total_time = spend_time / progress_ratio
                         remaining_time = max(0.0, estimated_total_time - spend_time)
@@ -436,8 +440,7 @@ def train_epoch(epoch, wandb):
                         last_val_samples = current_samples
 
             if ddp:
-                import torch as _torch
-                flag = _torch.tensor([1 if should_validate else 0], device=args.device, dtype=_torch.int)
+                flag = torch.tensor([1 if should_validate else 0], device=args.device, dtype=torch.int)
                 dist.broadcast(flag, src=0)
                 should_validate = bool(int(flag.item()))
 
@@ -447,6 +450,11 @@ def train_epoch(epoch, wandb):
 
         if opt_step > 0 and opt_step % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             _save_checkpoint(model, lm_config, args, final=False)
+
+        step += 1
+        pbar.update(1)
+
+    pbar.close()
 
 
 def _save_checkpoint(model, lm_config, args, final=False):
@@ -692,9 +700,9 @@ if __name__ == "__main__":
     # 计算 branches_multiplier（如果启用动态模式，使用 max_branches）
     branches_multiplier = args.max_branches_per_sample if args.max_branches_per_sample is not None else args.branches_per_sample
 
-    # 每次 DataLoader 取 max_branches 个文本，collator 生成 1 个 sample（随机 branch 数）
-    # 训练循环按 token 累积来决定何时 optimizer.step
-    effective_batch_size = branches_multiplier
+    # DataLoader 每次取 max_branches × batch_size 个文本
+    # collator 根据 fixed_branch_count 将这些文本分组为 batch_size 个 sample
+    effective_batch_size = branches_multiplier * args.batch_size
 
     config_kwargs = dict(
         hidden_size=args.hidden_size,
@@ -724,8 +732,6 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
-    # tokens_per_iter: 每个 optimizer step 目标的 token 数
-    tokens_per_iter = args.max_total_tokens if args.max_total_tokens > 0 else args.max_seq_len
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
@@ -786,15 +792,15 @@ if __name__ == "__main__":
     collator = ParallelPretrainCollator(
         tokenizer,
         branches_per_sample=args.branches_per_sample,
-        pad_to=None,  # 不 pad：每个 sample 长度 = branch_count × chunk_length
+        pad_to=None,  # 不 pad：同一 micro-batch 内 branch 数相同，序列等长
         max_branches_per_sample=args.max_branches_per_sample,
         min_branches_per_sample=args.min_branches_per_sample,
         random_time_offset=args.random_time_offset,
         interleave_branches=True,
         branch_stride=branch_stride,
     )
-    # 每次 collator 调用输出 1 个 sample（随机 branch 数）
-    collator.target_samples = 1
+    # fixed_branch_count 由训练循环每个 micro-batch 前设置
+    # target_samples 不设置，让 collator 按 fixed_branch_count 自动分组
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ["float16", "bfloat16"]))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     if ddp:
@@ -878,13 +884,17 @@ if __name__ == "__main__":
             train_sampler = DistributedSampler(train_ds, drop_last=drop_last) if ddp else None
             shuffle = (train_sampler is None)
 
+        # 动态 branch 模式需要 num_workers=0（collator.fixed_branch_count 在主进程设置）
+        dynamic_branch = args.max_branches_per_sample is not None and args.max_branches_per_sample > args.min_branches_per_sample
+        train_num_workers = 0 if dynamic_branch else args.num_workers
+
         train_loader = DataLoader(
             train_ds,
             batch_size=effective_batch_size,
             pin_memory=True,
             drop_last=drop_last,
             shuffle=shuffle,
-            num_workers=args.num_workers,
+            num_workers=train_num_workers,
             sampler=train_sampler,
             collate_fn=collator,
         )
