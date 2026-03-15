@@ -402,7 +402,7 @@ echo "Force: $FORCE_RERUN"
 echo "============================================================================"
 
 # --- 模型样本数 ---
-SMALL_SAMPLES=512000     # ~1B tokens
+SMALL_SAMPLES=256000     # ~524M tokens
 LARGE_SAMPLES=256000     # ~524M tokens
 
 # 计算全局总数（所有 config 共用 TRAIN_CONFIGS）
