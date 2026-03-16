@@ -110,10 +110,16 @@ def load_hotpotqa(
 ) -> List[Dict[str, Any]]:
     from datasets import load_dataset
 
-    if subset:
-        ds = load_dataset(dataset_name, subset, split=split)
+    effective_subset = subset
+    if effective_subset is None and dataset_name == "hotpotqa/hotpot_qa":
+        effective_subset = "distractor"
+
+    use_streaming = max_samples is not None
+
+    if effective_subset:
+        ds = load_dataset(dataset_name, effective_subset, split=split, streaming=use_streaming)
     else:
-        ds = load_dataset(dataset_name, split=split)
+        ds = load_dataset(dataset_name, split=split, streaming=use_streaming)
 
     records: List[Dict[str, Any]] = []
     for idx, sample in enumerate(ds):
