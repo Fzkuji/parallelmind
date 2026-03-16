@@ -241,7 +241,7 @@ run_evaluation() {
     fi
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
-        log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1)))"
+        log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1))/$MAX_RETRIES)"
         local EVAL_OUTPUT=$(eval "$EVAL_CMD_BASE --batch_size $EVAL_BATCH" 2>&1)
         local EC=$?
 
@@ -252,7 +252,9 @@ run_evaluation() {
             local PPL=$(echo "$PARSED" | cut -d',' -f2)
             if [ -n "$LOSS" ]; then
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,$LOSS,$PPL" >> "$CSV_FILE"
-                log "[EVAL] $EXP_KEY → loss=$LOSS"
+                log "[DONE] $EXP_KEY → loss=$LOSS (attempt $((RETRY+1)), batch=$EVAL_BATCH)"
+            else
+                log "[WARN] $EXP_KEY → exit 0 but no loss parsed (attempt $((RETRY+1)))"
             fi
             mark_eval_completed "$EXP_KEY"
             return 0
@@ -262,18 +264,20 @@ run_evaluation() {
             RETRY=$((RETRY + 1))
             if [ $EVAL_BATCH -gt 1 ]; then
                 EVAL_BATCH=$((EVAL_BATCH / 2))
+                log "[OOM]  $EXP_KEY → retry $RETRY/$MAX_RETRIES, batch reduced to $EVAL_BATCH"
             else
-                log "[EVAL] OOM batch=1, skip $EXP_KEY"
+                log "[OOM]  $EXP_KEY → batch=1 still OOM, skipping"
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,OOM,OOM" >> "$CSV_FILE"
                 mark_eval_completed "$EXP_KEY"
                 return 0
             fi
         else
             echo "$EVAL_OUTPUT" >> "$LOG_FILE"
-            record_error "[EVAL FAILED] $EXP_KEY (non-OOM)"
+            record_error "[FAIL] $EXP_KEY → non-OOM error (attempt $((RETRY+1)))"
             return 1
         fi
     done
+    log "[FAIL] $EXP_KEY → max retries ($MAX_RETRIES) exhausted"
     return 1
 }
 
