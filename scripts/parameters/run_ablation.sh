@@ -154,7 +154,15 @@ parse_eval_output() {
 }
 
 check_oom() {
-    echo "$1" | grep -qi "out of memory\|OutOfMemoryError\|CUDA out of memory"
+    local OUTPUT="$1"
+    local EXIT_CODE="${2:-0}"
+    # 显式 OOM 消息
+    echo "$OUTPUT" | grep -qi "out of memory\|OutOfMemoryError\|CUDA out of memory" && return 0
+    # exitcode -9 = OOM killer (SIGKILL)
+    [ "$EXIT_CODE" -eq 137 ] || [ "$EXIT_CODE" -eq -9 ] && return 0
+    # NCCL timeout / collective failure (通常由某个 rank OOM 引起)
+    echo "$OUTPUT" | grep -qi "NCCL operations have failed or timed out" && return 0
+    return 1
 }
 
 init_logs() {
@@ -189,7 +197,7 @@ run_training() {
         log "[TRAIN] Attempt $((RETRY+1))/$MAX_RETRIES → $OUT_DIR"
 
         set -o pipefail
-        eval "$TRAIN_CMD" 2>&1 | tee /tmp/train_output_$$.txt
+        eval "PYTHONUNBUFFERED=1 $TRAIN_CMD" 2>&1 | tee /tmp/train_output_$$.txt
         local EC=$?
         set +o pipefail
         local OUTPUT=$(cat /tmp/train_output_$$.txt 2>/dev/null)
@@ -207,7 +215,7 @@ run_training() {
             return 0
         fi
 
-        if check_oom "$OUTPUT"; then
+        if check_oom "$OUTPUT" "$EC"; then
             RETRY=$((RETRY + 1))
             log "[TRAIN] OOM → retry $((RETRY))/$MAX_RETRIES"
         else
@@ -236,13 +244,20 @@ run_evaluation() {
 
     if [ "$FORCE_RERUN" = false ] && is_eval_completed "$EXP_KEY"; then
         local PREV=$(grep "^${ROPE_RATIO},${BRANCH_STR},${VAL_BRANCH}," "$CSV_FILE" 2>/dev/null | tail -1)
-        [ -n "$PREV" ] && log "[SKIP] $EXP_KEY → $(echo $PREV | cut -d',' -f4)" || log "[SKIP] $EXP_KEY"
-        return 0
+        local PREV_LOSS=$(echo "$PREV" | cut -d',' -f4)
+        if [ -n "$PREV_LOSS" ] && [ "$PREV_LOSS" != "" ]; then
+            log "[SKIP] $EXP_KEY → $PREV_LOSS"
+            return 0
+        else
+            # completed 里有但 CSV 里没有 loss，说明之前没跑成功，需要重跑
+            log "[REDO] $EXP_KEY → marked complete but no loss in CSV, re-running..."
+            sed -i "/^${EXP_KEY}$/d" "$COMPLETED_FILE" 2>/dev/null
+        fi
     fi
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
         log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1))/$MAX_RETRIES)"
-        local EVAL_OUTPUT=$(eval "$EVAL_CMD_BASE --batch_size $EVAL_BATCH" 2>&1)
+        local EVAL_OUTPUT=$(eval "PYTHONUNBUFFERED=1 $EVAL_CMD_BASE --batch_size $EVAL_BATCH" 2>&1)
         local EC=$?
 
         if [ $EC -eq 0 ]; then
@@ -252,15 +267,19 @@ run_evaluation() {
             local PPL=$(echo "$PARSED" | cut -d',' -f2)
             if [ -n "$LOSS" ]; then
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,$LOSS,$PPL" >> "$CSV_FILE"
+                mark_eval_completed "$EXP_KEY"
                 log "[DONE] $EXP_KEY → loss=$LOSS (attempt $((RETRY+1)), batch=$EVAL_BATCH)"
+                return 0
             else
-                log "[WARN] $EXP_KEY → exit 0 but no loss parsed (attempt $((RETRY+1)))"
+                # exit 0 但没解析到 loss，不标记完成，重试
+                RETRY=$((RETRY + 1))
+                log "[WARN] $EXP_KEY → exit 0 but no loss parsed (attempt $RETRY/$MAX_RETRIES), retrying..."
+                continue
             fi
-            mark_eval_completed "$EXP_KEY"
-            return 0
         fi
 
-        if check_oom "$EVAL_OUTPUT"; then
+        # 非 0 退出：判断是否 OOM
+        if check_oom "$EVAL_OUTPUT" "$EC"; then
             RETRY=$((RETRY + 1))
             if [ $EVAL_BATCH -gt 1 ]; then
                 EVAL_BATCH=$((EVAL_BATCH / 2))
@@ -273,11 +292,12 @@ run_evaluation() {
             fi
         else
             echo "$EVAL_OUTPUT" >> "$LOG_FILE"
-            record_error "[FAIL] $EXP_KEY → non-OOM error (attempt $((RETRY+1)))"
-            return 1
+            # 未知错误也重试，不直接放弃
+            RETRY=$((RETRY + 1))
+            log "[FAIL] $EXP_KEY → non-OOM error (attempt $RETRY/$MAX_RETRIES), retrying..."
         fi
     done
-    log "[FAIL] $EXP_KEY → max retries ($MAX_RETRIES) exhausted"
+    record_error "[FAIL] $EXP_KEY → max retries ($MAX_RETRIES) exhausted"
     return 1
 }
 
