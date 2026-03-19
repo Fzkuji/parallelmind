@@ -282,8 +282,8 @@ run_evaluation() {
         if check_oom "$EVAL_OUTPUT" "$EC"; then
             RETRY=$((RETRY + 1))
             if [ $EVAL_BATCH -gt 1 ]; then
-                EVAL_BATCH=$((EVAL_BATCH / 2))
-                log "[OOM]  $EXP_KEY → retry $RETRY/$MAX_RETRIES, batch reduced to $EVAL_BATCH"
+                EVAL_BATCH=1
+                log "[OOM]  $EXP_KEY → retry $RETRY/$MAX_RETRIES, batch reduced to 1"
             else
                 log "[OOM]  $EXP_KEY → batch=1 still OOM, skipping"
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,OOM,OOM" >> "$CSV_FILE"
