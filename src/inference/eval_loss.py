@@ -32,70 +32,132 @@ class _ChunkedHFDataset(Dataset):
         return self.chunks[idx]
 
 
+def _get_cache_path(args, max_chunks):
+    """生成 tokenized chunks 的缓存文件路径"""
+    import hashlib
+    key_parts = [
+        args.hf_dataset or '',
+        getattr(args, 'hf_subset', '') or '',
+        str(getattr(args, 'chunk_length', 0)),
+        str(max_chunks or 0),
+        args.tokenizer or '',
+    ]
+    key = hashlib.md5('|'.join(key_parts).encode()).hexdigest()[:12]
+    cache_dir = os.path.join(root_path, '.cache', 'eval_chunks')
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"chunks_{key}.pt")
+
+
 def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
-    """从 HF 加载数据（非 streaming），tokenize + pack 成 map-style dataset"""
+    """从 HF 加载数据（非 streaming），tokenize + pack 成 map-style dataset
+
+    优化:
+    - 磁盘缓存: tokenized chunks 缓存到 .cache/eval_chunks/，后续直接读取
+    - DDP: 只 rank 0 加载/tokenize，然后 broadcast 给其他 rank
+    """
     from datasets import load_dataset
     import logging
 
     ddp = getattr(args, 'ddp', False)
-    Logger("加载 HF 数据集（streaming → map-style）...", rank0_only=True, ddp=ddp)
-
-    load_kwargs = dict(split=getattr(args, 'hf_split', 'train'), streaming=True)
-    if getattr(args, 'hf_subset', None):
-        load_kwargs['name'] = args.hf_subset
-    raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
-
-    # 自动检测文本列
-    first_item = next(iter(raw_ds))
-    text_col = getattr(args, 'text_column', None)
-    if text_col is None:
-        cols = list(first_item.keys())
-        for c in ['text', 'content', 'document', 'sentence', 'data']:
-            if c in cols:
-                text_col = c
-                break
-        if text_col is None:
-            text_col = cols[0]
-
-    chunk_length = getattr(args, 'chunk_length', None)
     max_chunks = int(max_chunks) if max_chunks else None
+    cache_path = _get_cache_path(args, max_chunks)
 
-    # 重新创建迭代器（因为上面消耗了一个 item）
-    raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
+    # DDP: 只 rank 0 负责加载，其他 rank 等待
+    is_main = (not ddp) or (dist.get_rank() == 0)
 
-    if chunk_length and tokenizer:
-        # Token packing: 拼接文档，切成固定长度 chunks
-        logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
-        chunks = []
-        token_buffer = []
-        eos_id = tokenizer.eos_token_id
+    chunks = None
 
-        for item in raw_ds:
-            text = item.get(text_col, "")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            if token_buffer and eos_id is not None:
-                token_buffer.append(eos_id)
-            token_buffer.extend(tokenizer.encode(text.strip(), add_special_tokens=False))
-            while len(token_buffer) >= chunk_length:
-                chunks.append({"input_ids": token_buffer[:chunk_length]})
-                token_buffer = token_buffer[chunk_length:]
-                if max_chunks and len(chunks) >= max_chunks:
-                    break
-            if max_chunks and len(chunks) >= max_chunks:
-                break
+    if is_main:
+        # 尝试从磁盘缓存读取
+        if os.path.exists(cache_path):
+            Logger(f"从缓存加载 tokenized chunks: {cache_path}", rank0_only=True, ddp=ddp)
+            chunks = torch.load(cache_path, map_location='cpu', weights_only=False)
+            Logger(f"缓存加载完成: {len(chunks)} chunks", rank0_only=True, ddp=ddp)
+        else:
+            Logger("加载 HF 数据集（streaming → map-style）...", rank0_only=True, ddp=ddp)
 
-        Logger(f"Token packing 完成: {len(chunks)} chunks (chunk_length={chunk_length})",
-               rank0_only=True, ddp=ddp)
-    else:
-        # 不做 packing，直接用原始文本
-        chunks = []
-        for item in raw_ds:
-            text = item.get(text_col, "")
-            if isinstance(text, str) and text.strip():
-                chunks.append({"text": text.strip()})
-                if max_chunks and len(chunks) >= max_chunks:
-                    break
+            load_kwargs = dict(split=getattr(args, 'hf_split', 'train'), streaming=True)
+            if getattr(args, 'hf_subset', None):
+                load_kwargs['name'] = args.hf_subset
+            raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
+
+            # 自动检测文本列
+            first_item = next(iter(raw_ds))
+            text_col = getattr(args, 'text_column', None)
+            if text_col is None:
+                cols = list(first_item.keys())
+                for c in ['text', 'content', 'document', 'sentence', 'data']:
+                    if c in cols:
+                        text_col = c
+                        break
+                if text_col is None:
+                    text_col = cols[0]
+
+            chunk_length = getattr(args, 'chunk_length', None)
+
+            # 重新创建迭代器（因为上面消耗了一个 item）
+            raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
+
+            if chunk_length and tokenizer:
+                # Token packing: 拼接文档，切成固定长度 chunks
+                logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+                chunks = []
+                token_buffer = []
+                eos_id = tokenizer.eos_token_id
+
+                for item in raw_ds:
+                    text = item.get(text_col, "")
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    if token_buffer and eos_id is not None:
+                        token_buffer.append(eos_id)
+                    token_buffer.extend(tokenizer.encode(text.strip(), add_special_tokens=False))
+                    while len(token_buffer) >= chunk_length:
+                        chunks.append({"input_ids": token_buffer[:chunk_length]})
+                        token_buffer = token_buffer[chunk_length:]
+                        if max_chunks and len(chunks) >= max_chunks:
+                            break
+                    if max_chunks and len(chunks) >= max_chunks:
+                        break
+            else:
+                # 不做 packing，直接用原始文本
+                chunks = []
+                for item in raw_ds:
+                    text = item.get(text_col, "")
+                    if isinstance(text, str) and text.strip():
+                        chunks.append({"text": text.strip()})
+                        if max_chunks and len(chunks) >= max_chunks:
+                            break
+
+            Logger(f"Token packing 完成: {len(chunks)} chunks, 缓存到 {cache_path}",
+                   rank0_only=True, ddp=ddp)
+            # 保存缓存
+            torch.save(chunks, cache_path)
+
+    # DDP: broadcast chunks 从 rank 0 到其他 rank
+    if ddp:
+        import pickle
+        if is_main:
+            data_bytes = pickle.dumps(chunks)
+            size_tensor = torch.tensor([len(data_bytes)], dtype=torch.long, device=args.device)
+        else:
+            size_tensor = torch.tensor([0], dtype=torch.long, device=args.device)
+
+        dist.broadcast(size_tensor, src=0)
+        size = int(size_tensor.item())
+
+        if is_main:
+            data_tensor = torch.frombuffer(bytearray(data_bytes), dtype=torch.uint8).to(args.device)
+        else:
+            data_tensor = torch.empty(size, dtype=torch.uint8, device=args.device)
+
+        dist.broadcast(data_tensor, src=0)
+
+        if not is_main:
+            chunks = pickle.loads(data_tensor.cpu().numpy().tobytes())
+
+        # 释放临时 tensor
+        del data_tensor, size_tensor
 
     return _ChunkedHFDataset(chunks)
 
@@ -485,7 +547,7 @@ def main():
 
     # evaluation control
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--num_workers', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--max_total_tokens', type=int, default=4096, help='Pad/truncate per sample sequence length; set 0 to disable pad_to')
     parser.add_argument('--log_interval', type=int, default=50)
     parser.add_argument('--max_batches', type=int, default=0, help='Stop after N batches (0=all)')
