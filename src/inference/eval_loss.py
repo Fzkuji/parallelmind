@@ -5,7 +5,7 @@ import math
 import torch
 import torch.distributed as dist
 from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 # repo root on path
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -14,9 +14,85 @@ if root_path not in sys.path:
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerFast
 from src.model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from src.data.parallel_dataset import ParallelPretrainDataset, ParallelPretrainIterableDataset
+from src.data.parallel_dataset import ParallelPretrainDataset
 from src.data.parallel_collator import ParallelPretrainCollator
 from src.model.columnar import build_columnar_causal_mask, build_flex_columnar_mask
+
+
+class _ChunkedHFDataset(Dataset):
+    """Map-style dataset: 预加载 HF 数据，token packing 成固定长度 chunks"""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def __len__(self):
+        return len(self.chunks)
+
+    def __getitem__(self, idx):
+        return self.chunks[idx]
+
+
+def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
+    """从 HF 加载数据（非 streaming），tokenize + pack 成 map-style dataset"""
+    from datasets import load_dataset
+    import logging
+
+    Logger("加载 HF 数据集（非 streaming）...", rank0_only=True, ddp=getattr(args, 'ddp', False))
+
+    load_kwargs = dict(split=getattr(args, 'hf_split', 'train'))
+    if getattr(args, 'hf_subset', None):
+        load_kwargs['name'] = args.hf_subset
+    raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
+
+    # 自动检测文本列
+    text_col = getattr(args, 'text_column', None)
+    if text_col is None:
+        cols = raw_ds.column_names
+        for c in ['text', 'content', 'document', 'sentence', 'data']:
+            if c in cols:
+                text_col = c
+                break
+        if text_col is None:
+            text_col = cols[0]
+
+    chunk_length = getattr(args, 'chunk_length', None)
+    max_chunks = int(max_chunks) if max_chunks else None
+
+    if chunk_length and tokenizer:
+        # Token packing: 拼接文档，切成固定长度 chunks
+        logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+        chunks = []
+        token_buffer = []
+        eos_id = tokenizer.eos_token_id
+
+        for item in raw_ds:
+            text = item.get(text_col, "")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if token_buffer and eos_id is not None:
+                token_buffer.append(eos_id)
+            token_buffer.extend(tokenizer.encode(text.strip(), add_special_tokens=False))
+            while len(token_buffer) >= chunk_length:
+                chunks.append({"input_ids": token_buffer[:chunk_length]})
+                token_buffer = token_buffer[chunk_length:]
+                if max_chunks and len(chunks) >= max_chunks:
+                    break
+            if max_chunks and len(chunks) >= max_chunks:
+                break
+
+        Logger(f"Token packing 完成: {len(chunks)} chunks (chunk_length={chunk_length})",
+               rank0_only=True, ddp=getattr(args, 'ddp', False))
+    else:
+        # 不做 packing，直接用原始文本
+        chunks = []
+        for item in raw_ds:
+            text = item.get(text_col, "")
+            if isinstance(text, str) and text.strip():
+                chunks.append({"text": text.strip()})
+                if max_chunks and len(chunks) >= max_chunks:
+                    break
+
+    return _ChunkedHFDataset(chunks)
 
 
 def Logger(msg: str, *, rank0_only: bool = False, ddp: bool = False):
@@ -149,48 +225,25 @@ def evaluate(model, tokenizer, args):
     # 始终设置 target_samples，确保每个 batch 产生固定数量的样本
     val_collator.target_samples = max(1, args.batch_size)
 
-    # Dataset
+    # Dataset — eval 始终用 map-style dataset，支持 DistributedSampler + 多 worker 并行加载
+    desired_texts = args.eval_total_texts or args.eval_target_samples or getattr(args, 'eval_samples', 0) or getattr(args, 'max_samples', None)
+
     if getattr(args, 'hf_dataset', None):
-        ds = ParallelPretrainIterableDataset(
-            hf_dataset=args.hf_dataset,
-            hf_subset=getattr(args, 'hf_subset', None),
-            hf_split=getattr(args, 'hf_split', 'train'),
-            text_column=getattr(args, 'text_column', None),
-            max_samples=(args.eval_total_texts or args.eval_target_samples or getattr(args, 'max_samples', None)),
-            chunk_length=getattr(args, 'chunk_length', None),
-            tokenizer=tokenizer if getattr(args, 'chunk_length', None) else None,
-            offline=getattr(args, 'offline', False),
-        )
-        is_iterable = True
+        ds = _load_hf_map_dataset(args, tokenizer, max_chunks=desired_texts)
     else:
         ds = ParallelPretrainDataset(
             data_path=args.data_path,
-            max_samples=None,  # 先读全量，下面根据目标子集裁剪
+            max_samples=None,
         )
-        is_iterable = False
-        # 目标子集优先顺序：eval_total_texts > eval_target_samples > eval_samples(兼容老参数) > max_samples
-        desired_texts = 0
-        if args.eval_total_texts:
-            desired_texts = int(args.eval_total_texts)
-        elif args.eval_target_samples:
-            desired_texts = int(args.eval_target_samples)
-        elif args.eval_samples:
-            desired_texts = int(args.eval_samples)
-        elif args.max_samples:
-            desired_texts = int(args.max_samples)
-        if desired_texts and len(ds) > desired_texts:
+        if desired_texts and len(ds) > int(desired_texts):
             import random as _random
             indices = list(range(len(ds)))
             _random.shuffle(indices)
-            ds = Subset(ds, indices[: desired_texts])
+            ds = Subset(ds, indices[:int(desired_texts)])
 
-    # DataLoader
-    if is_iterable:
-        sampler = None
-        shuffle = False
-    else:
-        sampler = torch.utils.data.distributed.DistributedSampler(ds, shuffle=False, drop_last=False) if args.ddp else None
-        shuffle = sampler is None
+    # DataLoader (map-style: 支持 DistributedSampler + 多 worker)
+    sampler = torch.utils.data.distributed.DistributedSampler(ds, shuffle=False, drop_last=False) if args.ddp else None
+    shuffle = sampler is None
 
     # batch_size = 目标样本数, 需要取出足够的文本来构建这些样本
     effective_batch_size = max(1, int(args.batch_size * avg_branches))
