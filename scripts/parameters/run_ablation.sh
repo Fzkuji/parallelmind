@@ -266,7 +266,7 @@ run_evaluation() {
     while [ $RETRY -lt $MAX_RETRIES ]; do
         local ACTUAL_CMD
         if [ "$MP_GPUS" -gt 0 ]; then
-            # 单进程 + model_parallel=N：替换 torchrun 为 python
+            # 单进程 + model_parallel=N：替换 torchrun 为 python，清除 DDP 环境变量
             ACTUAL_CMD=$(echo "$EVAL_CMD_BASE" | sed 's|torchrun --nproc_per_node [0-9]* --master_port [0-9]*|python|')
             ACTUAL_CMD="$ACTUAL_CMD --batch_size $EVAL_BATCH --model_parallel $MP_GPUS"
             log "[EVAL] $EXP_KEY batch=$EVAL_BATCH model_parallel=$MP_GPUS (attempt $((RETRY+1))/$MAX_RETRIES)"
@@ -320,9 +320,12 @@ run_evaluation() {
             fi
         else
             cat "$EVAL_TMP" >> "$LOG_FILE"
+            # 打印错误摘要方便调试
+            local ERR_SNIPPET=$(tail -5 "$EVAL_TMP" 2>/dev/null)
             # 未知错误也重试，不直接放弃
             RETRY=$((RETRY + 1))
-            log "[FAIL] $EXP_KEY → non-OOM error (attempt $RETRY/$MAX_RETRIES), retrying..."
+            log "[FAIL] $EXP_KEY → non-OOM error exitcode=$EC (attempt $RETRY/$MAX_RETRIES), retrying..."
+            log "[FAIL] last 5 lines: $ERR_SNIPPET"
         fi
     done
     rm -f "$EVAL_TMP"
