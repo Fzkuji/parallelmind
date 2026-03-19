@@ -237,18 +237,23 @@ run_evaluation() {
     local BRANCH_STR=$4
     local VAL_BRANCH=$5
     local EVAL_BATCH=$6
-    local MAX_RETRIES=4
+    local MAX_RETRIES=6
     local RETRY=0
-    local USE_MP=false
+    local MP_GPUS=0
 
     local EXP_KEY="r${ROPE_STR}-b${BRANCH_STR}-eval${VAL_BRANCH}"
 
     if [ "$FORCE_RERUN" = false ] && is_eval_completed "$EXP_KEY"; then
         local PREV=$(grep "^${ROPE_RATIO},${BRANCH_STR},${VAL_BRANCH}," "$CSV_FILE" 2>/dev/null | tail -1)
         local PREV_LOSS=$(echo "$PREV" | cut -d',' -f4)
-        if [ -n "$PREV_LOSS" ] && [ "$PREV_LOSS" != "" ]; then
+        if [ -n "$PREV_LOSS" ] && [ "$PREV_LOSS" != "" ] && [ "$PREV_LOSS" != "OOM" ]; then
             log "[SKIP] $EXP_KEY → $PREV_LOSS"
             return 0
+        elif [ "$PREV_LOSS" = "OOM" ]; then
+            log "[REDO] $EXP_KEY → previously OOM, retrying with model_parallel..."
+            sed -i "/^${EXP_KEY}$/d" "$COMPLETED_FILE" 2>/dev/null
+            # 删除 CSV 中旧的 OOM 记录
+            sed -i "/^${ROPE_RATIO},${BRANCH_STR},${VAL_BRANCH},OOM,OOM$/d" "$CSV_FILE" 2>/dev/null
         else
             # completed 里有但 CSV 里没有 loss，说明之前没跑成功，需要重跑
             log "[REDO] $EXP_KEY → marked complete but no loss in CSV, re-running..."
@@ -260,11 +265,11 @@ run_evaluation() {
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
         local ACTUAL_CMD
-        if [ "$USE_MP" = true ]; then
-            # 单进程 + model_parallel=2：替换 torchrun 为 python
+        if [ "$MP_GPUS" -gt 0 ]; then
+            # 单进程 + model_parallel=N：替换 torchrun 为 python
             ACTUAL_CMD=$(echo "$EVAL_CMD_BASE" | sed 's|torchrun --nproc_per_node [0-9]* --master_port [0-9]*|python|')
-            ACTUAL_CMD="$ACTUAL_CMD --batch_size $EVAL_BATCH --model_parallel 2"
-            log "[EVAL] $EXP_KEY batch=$EVAL_BATCH model_parallel=2 (attempt $((RETRY+1))/$MAX_RETRIES)"
+            ACTUAL_CMD="$ACTUAL_CMD --batch_size $EVAL_BATCH --model_parallel $MP_GPUS"
+            log "[EVAL] $EXP_KEY batch=$EVAL_BATCH model_parallel=$MP_GPUS (attempt $((RETRY+1))/$MAX_RETRIES)"
         else
             ACTUAL_CMD="$EVAL_CMD_BASE --batch_size $EVAL_BATCH"
             log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1))/$MAX_RETRIES)"
@@ -296,13 +301,18 @@ run_evaluation() {
             if [ $EVAL_BATCH -gt 1 ]; then
                 EVAL_BATCH=1
                 log "[OOM]  $EXP_KEY → retry $RETRY/$MAX_RETRIES, batch reduced to 1"
-            elif [ "$USE_MP" = false ]; then
+            elif [ "$MP_GPUS" -eq 0 ]; then
                 # batch=1 仍 OOM → 切换为 model_parallel=2 单进程模式
-                USE_MP=true
+                MP_GPUS=2
                 EVAL_BATCH=1
                 log "[OOM]  $EXP_KEY → batch=1 OOM, switching to model_parallel=2"
+            elif [ "$MP_GPUS" -eq 2 ]; then
+                # model_parallel=2 仍 OOM → 升级为 model_parallel=4
+                MP_GPUS=4
+                EVAL_BATCH=1
+                log "[OOM]  $EXP_KEY → model_parallel=2 OOM, switching to model_parallel=4"
             else
-                log "[OOM]  $EXP_KEY → model_parallel=2 still OOM, skipping"
+                log "[OOM]  $EXP_KEY → model_parallel=4 still OOM, skipping"
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,OOM,OOM" >> "$CSV_FILE"
                 mark_eval_completed "$EXP_KEY"
                 rm -f "$EVAL_TMP"
