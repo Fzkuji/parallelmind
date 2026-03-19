@@ -237,8 +237,9 @@ run_evaluation() {
     local BRANCH_STR=$4
     local VAL_BRANCH=$5
     local EVAL_BATCH=$6
-    local MAX_RETRIES=3
+    local MAX_RETRIES=4
     local RETRY=0
+    local USE_MP=false
 
     local EXP_KEY="r${ROPE_STR}-b${BRANCH_STR}-eval${VAL_BRANCH}"
 
@@ -258,8 +259,17 @@ run_evaluation() {
     local EVAL_TMP="/tmp/eval_output_$$.txt"
 
     while [ $RETRY -lt $MAX_RETRIES ]; do
-        log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1))/$MAX_RETRIES)"
-        eval "PYTHONUNBUFFERED=1 $EVAL_CMD_BASE --batch_size $EVAL_BATCH" > "$EVAL_TMP" 2>&1
+        local ACTUAL_CMD
+        if [ "$USE_MP" = true ]; then
+            # 单进程 + model_parallel=2：替换 torchrun 为 python
+            ACTUAL_CMD=$(echo "$EVAL_CMD_BASE" | sed 's|torchrun --nproc_per_node [0-9]* --master_port [0-9]*|python|')
+            ACTUAL_CMD="$ACTUAL_CMD --batch_size $EVAL_BATCH --model_parallel 2"
+            log "[EVAL] $EXP_KEY batch=$EVAL_BATCH model_parallel=2 (attempt $((RETRY+1))/$MAX_RETRIES)"
+        else
+            ACTUAL_CMD="$EVAL_CMD_BASE --batch_size $EVAL_BATCH"
+            log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1))/$MAX_RETRIES)"
+        fi
+        eval "PYTHONUNBUFFERED=1 $ACTUAL_CMD" > "$EVAL_TMP" 2>&1
         local EC=$?
 
         if [ $EC -eq 0 ]; then
@@ -286,8 +296,13 @@ run_evaluation() {
             if [ $EVAL_BATCH -gt 1 ]; then
                 EVAL_BATCH=1
                 log "[OOM]  $EXP_KEY → retry $RETRY/$MAX_RETRIES, batch reduced to 1"
+            elif [ "$USE_MP" = false ]; then
+                # batch=1 仍 OOM → 切换为 model_parallel=2 单进程模式
+                USE_MP=true
+                EVAL_BATCH=1
+                log "[OOM]  $EXP_KEY → batch=1 OOM, switching to model_parallel=2"
             else
-                log "[OOM]  $EXP_KEY → batch=1 still OOM, skipping"
+                log "[OOM]  $EXP_KEY → model_parallel=2 still OOM, skipping"
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,OOM,OOM" >> "$CSV_FILE"
                 mark_eval_completed "$EXP_KEY"
                 rm -f "$EVAL_TMP"

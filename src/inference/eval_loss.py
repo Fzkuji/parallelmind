@@ -100,6 +100,100 @@ def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
     return _ChunkedHFDataset(chunks)
 
 
+def setup_model_parallel(model, num_gpus=2):
+    """Simple pipeline parallelism: 把模型层均匀分配到多 GPU 上"""
+    inner = model.model  # MiniMindModel
+    layers = inner.layers
+    n_layers = len(layers)
+    layers_per_gpu = (n_layers + num_gpus - 1) // num_gpus
+
+    # embed + dropout 放 GPU 0
+    inner.embed_tokens.to('cuda:0')
+    inner.dropout.to('cuda:0')
+    inner.rotary_emb.to('cuda:0')
+    if hasattr(inner, 'fourier_pe'):
+        inner.fourier_pe.to('cuda:0')
+
+    # 分配 transformer layers
+    layer_device_map = {}
+    for i, layer in enumerate(layers):
+        gpu = min(i // layers_per_gpu, num_gpus - 1)
+        layer.to(f'cuda:{gpu}')
+        layer_device_map[i] = gpu
+
+    # norm + lm_head 放最后一个 GPU
+    last_gpu = f'cuda:{num_gpus - 1}'
+    inner.norm.to(last_gpu)
+    model.lm_head.to(last_gpu)
+
+    # Patch forward: 在层之间自动搬运 hidden_states
+    original_forward = inner.forward
+
+    def patched_forward(input_ids=None, attention_mask=None, past_key_values=None,
+                        use_cache=False, position_ids=None, pos2d=None, **kwargs):
+        batch_size, seq_length = input_ids.shape
+        if hasattr(past_key_values, "layers"):
+            past_key_values = None
+        past_key_values = past_key_values or [None] * len(layers)
+
+        hidden_states = inner.dropout(inner.embed_tokens(input_ids.to('cuda:0')))
+
+        if position_ids is None:
+            position_ids = torch.arange(seq_length, device='cuda:0')[None, :].expand(batch_size, -1)
+        else:
+            position_ids = position_ids.to('cuda:0')
+        if pos2d is None:
+            branch_zeros = torch.zeros_like(position_ids)
+            pos2d = torch.stack([branch_zeros, position_ids], dim=-1)
+        else:
+            pos2d = pos2d.to('cuda:0')
+
+        if inner.config.pe_type == 'rope':
+            if hasattr(inner.rotary_emb, '__class__') and 'Interleaved2DRoPE' in inner.rotary_emb.__class__.__name__:
+                from src.model.columnar import set_rope_pos2d
+                set_rope_pos2d(inner, pos2d)
+            cos, sin = inner.rotary_emb(hidden_states, position_ids)
+            position_embeddings = (cos, sin)
+        elif inner.config.pe_type == 'fpe':
+            branch_ids = pos2d[:, :, 0]
+            time_ids = pos2d[:, :, 1]
+            branch_pe = inner.fourier_pe(branch_ids.long())
+            hidden_states = hidden_states + branch_pe
+            cos, sin = inner.rotary_emb(hidden_states, time_ids)
+            position_embeddings = (cos, sin)
+
+        presents = []
+        prev_gpu = 0
+        for layer_idx, (layer, past_key_value) in enumerate(zip(layers, past_key_values)):
+            gpu = layer_device_map[layer_idx]
+            if gpu != prev_gpu:
+                target_device = f'cuda:{gpu}'
+                hidden_states = hidden_states.to(target_device)
+                position_embeddings = tuple(t.to(target_device) for t in position_embeddings)
+                if attention_mask is not None:
+                    attention_mask = attention_mask.to(target_device) if isinstance(attention_mask, torch.Tensor) else attention_mask
+                prev_gpu = gpu
+            hidden_states, present = layer(
+                hidden_states, position_embeddings,
+                past_key_value=past_key_value, use_cache=use_cache,
+                attention_mask=attention_mask,
+            )
+            presents.append(present)
+
+        hidden_states = hidden_states.to(last_gpu)
+        hidden_states = inner.norm(hidden_states)
+
+        from src.model.model_minimind import MOEFeedForward
+        aux_loss = sum(
+            layer.mlp.aux_loss for layer in layers
+            if isinstance(layer.mlp, MOEFeedForward)
+        )
+        return hidden_states, presents, aux_loss
+
+    inner.forward = patched_forward
+    return model, last_gpu
+
+
 def Logger(msg: str, *, rank0_only: bool = False, ddp: bool = False):
     if not ddp:
         print(msg)
@@ -409,16 +503,27 @@ def main():
     parser.add_argument('--random_time_offset', action='store_true', default=False)
     parser.add_argument('--no_random_time_offset', action='store_false', dest='random_time_offset')
     parser.add_argument('--batch_by_samples', action='store_true', help='Interpret batch_size as number of samples (collated groups); DataLoader batch size will scale by平均分支数')
+    parser.add_argument('--model_parallel', type=int, default=0,
+                        help='Split model across N GPUs (pipeline parallelism). 0=disabled, use DDP. >0: single process, model split across N GPUs.')
 
     args = parser.parse_args()
 
-    # DDP 初始化（若通过 torchrun 启动会生效）
-    init_distributed_if_needed(args)
-
-    model, tokenizer = load_model_and_tokenizer(args)
-    if (not args.ddp) or dist.get_rank() == 0:
+    # Model parallel 模式：单进程，模型分到多 GPU
+    if args.model_parallel > 0:
+        args.ddp = False
+        args.device = 'cuda:0'
+        model, tokenizer = load_model_and_tokenizer(args)
+        model, last_device = setup_model_parallel(model, args.model_parallel)
+        args.device = last_device  # loss 计算在最后一个 GPU
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        Logger(f"模型可训练参数量：{total_params / 1e6:.3f} 百万", rank0_only=True, ddp=args.ddp)
+        Logger(f"模型可训练参数量：{total_params / 1e6:.3f} 百万 (model_parallel={args.model_parallel})")
+    else:
+        # DDP 初始化（若通过 torchrun 启动会生效）
+        init_distributed_if_needed(args)
+        model, tokenizer = load_model_and_tokenizer(args)
+        if (not args.ddp) or dist.get_rank() == 0:
+            total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            Logger(f"模型可训练参数量：{total_params / 1e6:.3f} 百万", rank0_only=True, ddp=args.ddp)
 
     evaluate(model, tokenizer, args)
 
