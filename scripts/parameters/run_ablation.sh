@@ -379,16 +379,14 @@ run_model_experiments() {
                 local EVAL_MAX_TOTAL=$((VAL_B * CHUNK_LENGTH))
                 local EVAL_BATCH
                 if [ "$HIDDEN" -le 512 ]; then
-                    EVAL_BATCH=16
-                    [ "$VAL_B" -ge 8 ] && EVAL_BATCH=8
-                    [ "$VAL_B" -ge 16 ] && EVAL_BATCH=4
-                    [ "$VAL_B" -ge 32 ] && EVAL_BATCH=2
-                    [ "$VAL_B" -ge 64 ] && EVAL_BATCH=1
-                else
                     EVAL_BATCH=8
-                    [ "$VAL_B" -ge 4 ] && EVAL_BATCH=4
-                    [ "$VAL_B" -ge 8 ] && EVAL_BATCH=2
-                    [ "$VAL_B" -ge 16 ] && EVAL_BATCH=1
+                    [ "$VAL_B" -ge 8 ] && EVAL_BATCH=4
+                    [ "$VAL_B" -ge 16 ] && EVAL_BATCH=2
+                    [ "$VAL_B" -ge 32 ] && EVAL_BATCH=1
+                else
+                    EVAL_BATCH=4
+                    [ "$VAL_B" -ge 4 ] && EVAL_BATCH=2
+                    [ "$VAL_B" -ge 8 ] && EVAL_BATCH=1
                 fi
 
                 local EVAL_CMD="PYTHONPATH=. torchrun --nproc_per_node $NUM_GPUS --master_port $MASTER_PORT src/inference/eval_loss.py \
