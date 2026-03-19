@@ -37,17 +37,19 @@ def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
     from datasets import load_dataset
     import logging
 
-    Logger("加载 HF 数据集（非 streaming）...", rank0_only=True, ddp=getattr(args, 'ddp', False))
+    ddp = getattr(args, 'ddp', False)
+    Logger("加载 HF 数据集（streaming → map-style）...", rank0_only=True, ddp=ddp)
 
-    load_kwargs = dict(split=getattr(args, 'hf_split', 'train'))
+    load_kwargs = dict(split=getattr(args, 'hf_split', 'train'), streaming=True)
     if getattr(args, 'hf_subset', None):
         load_kwargs['name'] = args.hf_subset
     raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
 
     # 自动检测文本列
+    first_item = next(iter(raw_ds))
     text_col = getattr(args, 'text_column', None)
     if text_col is None:
-        cols = raw_ds.column_names
+        cols = list(first_item.keys())
         for c in ['text', 'content', 'document', 'sentence', 'data']:
             if c in cols:
                 text_col = c
@@ -57,6 +59,9 @@ def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
 
     chunk_length = getattr(args, 'chunk_length', None)
     max_chunks = int(max_chunks) if max_chunks else None
+
+    # 重新创建迭代器（因为上面消耗了一个 item）
+    raw_ds = load_dataset(args.hf_dataset, **load_kwargs)
 
     if chunk_length and tokenizer:
         # Token packing: 拼接文档，切成固定长度 chunks
@@ -81,7 +86,7 @@ def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
                 break
 
         Logger(f"Token packing 完成: {len(chunks)} chunks (chunk_length={chunk_length})",
-               rank0_only=True, ddp=getattr(args, 'ddp', False))
+               rank0_only=True, ddp=ddp)
     else:
         # 不做 packing，直接用原始文本
         chunks = []
