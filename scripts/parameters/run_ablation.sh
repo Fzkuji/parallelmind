@@ -255,20 +255,22 @@ run_evaluation() {
         fi
     fi
 
+    local EVAL_TMP="/tmp/eval_output_$$.txt"
+
     while [ $RETRY -lt $MAX_RETRIES ]; do
         log "[EVAL] $EXP_KEY batch=$EVAL_BATCH (attempt $((RETRY+1))/$MAX_RETRIES)"
-        local EVAL_OUTPUT=$(eval "PYTHONUNBUFFERED=1 $EVAL_CMD_BASE --batch_size $EVAL_BATCH" 2>&1)
+        eval "PYTHONUNBUFFERED=1 $EVAL_CMD_BASE --batch_size $EVAL_BATCH" > "$EVAL_TMP" 2>&1
         local EC=$?
 
         if [ $EC -eq 0 ]; then
-            echo "$EVAL_OUTPUT" >> "$LOG_FILE"
-            local PARSED=$(parse_eval_output "$EVAL_OUTPUT")
-            local LOSS=$(echo "$PARSED" | cut -d',' -f1)
-            local PPL=$(echo "$PARSED" | cut -d',' -f2)
+            cat "$EVAL_TMP" >> "$LOG_FILE"
+            local LOSS=$(grep -oP '平均loss=\K[0-9.]+' "$EVAL_TMP" | tail -1)
+            local PPL=$(grep -oP '近似ppl=\K[0-9.]+|inf' "$EVAL_TMP" | tail -1)
             if [ -n "$LOSS" ]; then
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,$LOSS,$PPL" >> "$CSV_FILE"
                 mark_eval_completed "$EXP_KEY"
                 log "[DONE] $EXP_KEY → loss=$LOSS (attempt $((RETRY+1)), batch=$EVAL_BATCH)"
+                rm -f "$EVAL_TMP"
                 return 0
             else
                 # exit 0 但没解析到 loss，不标记完成，重试
@@ -278,8 +280,8 @@ run_evaluation() {
             fi
         fi
 
-        # 非 0 退出：判断是否 OOM
-        if check_oom "$EVAL_OUTPUT" "$EC"; then
+        # 非 0 退出：判断是否 OOM（直接 grep 文件，避免大输出传参问题）
+        if check_oom "$(grep -m1 -i 'out of memory\|OutOfMemoryError\|CUDA out of memory\|NCCL operations have failed' "$EVAL_TMP" 2>/dev/null)" "$EC"; then
             RETRY=$((RETRY + 1))
             if [ $EVAL_BATCH -gt 1 ]; then
                 EVAL_BATCH=1
@@ -288,15 +290,17 @@ run_evaluation() {
                 log "[OOM]  $EXP_KEY → batch=1 still OOM, skipping"
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,OOM,OOM" >> "$CSV_FILE"
                 mark_eval_completed "$EXP_KEY"
+                rm -f "$EVAL_TMP"
                 return 0
             fi
         else
-            echo "$EVAL_OUTPUT" >> "$LOG_FILE"
+            cat "$EVAL_TMP" >> "$LOG_FILE"
             # 未知错误也重试，不直接放弃
             RETRY=$((RETRY + 1))
             log "[FAIL] $EXP_KEY → non-OOM error (attempt $RETRY/$MAX_RETRIES), retrying..."
         fi
     done
+    rm -f "$EVAL_TMP"
     record_error "[FAIL] $EXP_KEY → max retries ($MAX_RETRIES) exhausted"
     return 1
 }
