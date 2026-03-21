@@ -169,6 +169,11 @@ def setup_model_parallel(model, num_gpus=2):
     n_layers = len(layers)
     layers_per_gpu = (n_layers + num_gpus - 1) // num_gpus
 
+    # 断开 weight tying（embed_tokens 和 lm_head 共享权重），
+    # 否则 lm_head 移到最后一个 GPU 时会把 embed_tokens 的权重也带走
+    if inner.embed_tokens.weight.data_ptr() == model.lm_head.weight.data_ptr():
+        inner.embed_tokens.weight = nn.Parameter(inner.embed_tokens.weight.clone())
+
     # embed + dropout 放 GPU 0
     inner.embed_tokens.to('cuda:0')
     inner.dropout.to('cuda:0')
