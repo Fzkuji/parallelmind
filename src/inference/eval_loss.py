@@ -173,7 +173,7 @@ def setup_model_parallel(model, num_gpus=2):
     inner.embed_tokens.to('cuda:0')
     inner.dropout.to('cuda:0')
     inner.rotary_emb.to('cuda:0')
-    if hasattr(inner, 'fourier_pe'):
+    if hasattr(inner, 'fourier_pe') and inner.fourier_pe is not None:
         inner.fourier_pe.to('cuda:0')
 
     # 分配 transformer layers
