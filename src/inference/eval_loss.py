@@ -163,35 +163,41 @@ def _load_hf_map_dataset(args, tokenizer, max_chunks=None):
 
 
 def setup_model_parallel(model, num_gpus=2):
-    """使用 accelerate 的 dispatch_model 自动分配模型到多 GPU"""
-    from accelerate import dispatch_model, infer_auto_device_map
-    from accelerate.utils import get_balanced_memory
+    """使用 accelerate 的 dispatch_model 自动分配模型到多 GPU
 
-    # 断开 weight tying，否则 accelerate 分配时会冲突
+    手动构建 device_map：embed/dropout/rotary/fourier 放 GPU 0，
+    transformer layers 均匀分配，norm/lm_head 放最后一张卡。
+    accelerate 自动处理跨 GPU 的 tensor 搬运（hook-based）。
+    """
+    from accelerate import dispatch_model
+
     inner = model.model
-    if inner.embed_tokens.weight.data_ptr() == model.lm_head.weight.data_ptr():
-        inner.embed_tokens.weight = nn.Parameter(inner.embed_tokens.weight.clone())
+    n_layers = len(inner.layers)
+    layers_per_gpu = (n_layers + num_gpus - 1) // num_gpus
 
-    # 只用前 num_gpus 张卡
-    max_memory = get_balanced_memory(
-        model,
-        max_memory={i: torch.cuda.get_device_properties(i).total_mem for i in range(num_gpus)},
-        no_split_module_classes=["MiniMindBlock"],
-    )
+    device_map = {
+        "model.embed_tokens": 0,
+        "model.dropout": 0,
+        "model.rotary_emb": 0,
+    }
 
-    device_map = infer_auto_device_map(
-        model,
-        max_memory=max_memory,
-        no_split_module_classes=["MiniMindBlock"],
-    )
+    # fourier_pe 可能为 None（rope 模式），只有存在时才加入
+    if inner.fourier_pe is not None:
+        device_map["model.fourier_pe"] = 0
+
+    # transformer layers 均匀分配
+    for i in range(n_layers):
+        gpu = min(i // layers_per_gpu, num_gpus - 1)
+        device_map[f"model.layers.{i}"] = gpu
+
+    # norm + lm_head 放最后一张卡
+    last_gpu = min(num_gpus - 1, num_gpus - 1)
+    device_map["model.norm"] = last_gpu
+    device_map["lm_head"] = last_gpu
 
     model = dispatch_model(model, device_map=device_map)
 
-    # 找出 lm_head 所在的设备作为输出设备
-    last_device = device_map.get("lm_head", "cuda:0")
-    if isinstance(last_device, int):
-        last_device = f"cuda:{last_device}"
-
+    last_device = f"cuda:{last_gpu}"
     return model, last_device
 
 
