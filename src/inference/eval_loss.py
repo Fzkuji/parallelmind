@@ -172,6 +172,12 @@ def setup_model_parallel(model, num_gpus=2):
     from accelerate import dispatch_model
 
     inner = model.model
+
+    # 断开 weight tying（embed_tokens 和 lm_head 共享权重），
+    # 否则 lm_head 放到最后一张卡时会把 embed_tokens 的权重也拉过去
+    if inner.embed_tokens.weight.data_ptr() == model.lm_head.weight.data_ptr():
+        model.lm_head.weight = nn.Parameter(model.lm_head.weight.clone())
+
     n_layers = len(inner.layers)
     layers_per_gpu = (n_layers + num_gpus - 1) // num_gpus
 
