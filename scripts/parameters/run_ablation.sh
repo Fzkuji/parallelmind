@@ -302,17 +302,12 @@ run_evaluation() {
                 EVAL_BATCH=1
                 log "[OOM]  $EXP_KEY → retry $RETRY/$MAX_RETRIES, batch reduced to 1"
             elif [ "$MP_GPUS" -eq 0 ]; then
-                # batch=1 仍 OOM → 切换为 model_parallel=2 单进程模式
-                MP_GPUS=2
+                # batch=1 仍 OOM → 全部 8 卡跑一个模型
+                MP_GPUS=8
                 EVAL_BATCH=1
-                log "[OOM]  $EXP_KEY → batch=1 OOM, switching to model_parallel=2"
-            elif [ "$MP_GPUS" -eq 2 ]; then
-                # model_parallel=2 仍 OOM → 升级为 model_parallel=4
-                MP_GPUS=4
-                EVAL_BATCH=1
-                log "[OOM]  $EXP_KEY → model_parallel=2 OOM, switching to model_parallel=4"
+                log "[OOM]  $EXP_KEY → batch=1 OOM, switching to model_parallel=8 (all GPUs)"
             else
-                log "[OOM]  $EXP_KEY → model_parallel=4 still OOM, skipping"
+                log "[OOM]  $EXP_KEY → model_parallel=$MP_GPUS still OOM, skipping"
                 echo "$ROPE_RATIO,$BRANCH_STR,$VAL_BRANCH,OOM,OOM" >> "$CSV_FILE"
                 mark_eval_completed "$EXP_KEY"
                 rm -f "$EVAL_TMP"
